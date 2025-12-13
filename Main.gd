@@ -44,6 +44,7 @@ var guide_arrow
 var guide_line
 var drag_trail
 var slash_line
+var target_circle
 
 func _ready():
 	randomize()
@@ -150,6 +151,13 @@ func _setup_visuals():
 	slash_line.width = 6
 	slash_line.default_color = Color(1, 1, 1, 0.8)
 	add_child(slash_line) # In world space for shake compatibility
+
+	target_circle = Line2D.new()
+	_create_circle(target_circle, 40)
+	target_circle.default_color = Color(1, 0.2, 0.2, 0.8) # Red target
+	target_circle.width = 4
+	target_circle.visible = false
+	swipe_overlay.add_child(target_circle)
 
 func _create_label(pos, text, color):
 	var l = Label.new()
@@ -333,18 +341,21 @@ func _next_combo_step():
 	var offset = Vector2.ZERO
 	
 	if is_sandevistan:
-		# SINGLE POINT MASH: Alternate Left<->Right through the center
-		var dir = 1 if combo_count % 2 == 0 else -1
-		required_angle = 0 if dir == 1 else PI
+		# FRUIT NINJA MODE: Show Target Circle
+		target_circle.visible = true
+		target_circle.position = enemy_node.position + Vector2(0, -40)
 		
-		var center = enemy_node.position + Vector2(0, -40)
-		var radius = 100.0
-		offset = Vector2(dir, 0) * radius
+		# No guide lines for free movement
+		guide_line.visible = false
+		guide_arrow.visible = false
 		
-		swipe_start_pos = center - offset
-		swipe_end_pos = center + offset
-		
+		# Dummy positions for safety
+		swipe_start_pos = target_circle.position
+		swipe_end_pos = target_circle.position
+		return # Skip normal setup
+
 	else:
+		target_circle.visible = false
 		randomize()
 		required_angle = randf() * TAU
 		
@@ -371,6 +382,17 @@ func _process_swipe(start, end):
 	if vector.length() < 50:
 		return # Too short
 	
+	if is_sandevistan:
+		# Hit Detection: Cut through the circle?
+		# Simple check: distance from segment to center
+		var center = target_circle.position
+		var closest = Geometry2D.get_closest_point_to_segment(center, start, end)
+		var dist = center.distance_to(closest)
+		
+		if dist < 40: # Radius of circle
+			_succeed_swipe(1.0)
+		return # Ignore misses in Ninja mode to allow spam logic
+
 	var angle = vector.angle()
 	# Compare angle with required_angle
 	# Dot product of normalized vectors
@@ -484,7 +506,8 @@ func _activate_sandevistan():
 	var chromatic = WorldEnvironment.new() # Placeholder for effect
 	
 	# Timer
-	var t = get_tree().create_timer(SANDEVISTAN_DURATION * Engine.time_scale)
+	# 5 Seconds Real Time regardless of slow-mo
+	var t = get_tree().create_timer(SANDEVISTAN_DURATION) 
 	t.timeout.connect(_deactivate_sandevistan)
 	
 	_next_combo_step()
