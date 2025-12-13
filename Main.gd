@@ -325,22 +325,34 @@ func _next_combo_step():
 	
 	# Difficulty logic
 	var duration_base = 1.2 if not is_sandevistan else 0.5
-	swipe_duration = duration_base - (combo_count * 0.1)
+	var reduction = combo_count * (0.02 if is_sandevistan else 0.1)
+	swipe_duration = max(0.2, duration_base - reduction)
 	swipe_time_left = swipe_duration
 	
 	# Generate Direction
-	# If continuing combo, try to flow (e.g. Right -> Left)
-	# For now, just random angles
-	randomize()
-	required_angle = randf() * TAU
-	
-	# Visuals on Enemy
-	var center = enemy_node.position + Vector2(0, -40)
-	var radius = 100.0
-	var offset = Vector2(cos(required_angle), sin(required_angle)) * radius
-	
-	swipe_start_pos = center - offset
-	swipe_end_pos = center + offset
+	if is_sandevistan:
+		# SINGLE POINT MASH: Alternate Left<->Right through the center
+		var dir = 1 if combo_count % 2 == 0 else -1
+		required_angle = 0 if dir == 1 else PI
+		
+		var center = enemy_node.position + Vector2(0, -40)
+		var radius = 100.0
+		var offset = Vector2(dir, 0) * radius
+		
+		swipe_start_pos = center - offset
+		swipe_end_pos = center + offset
+		
+	else:
+		randomize()
+		required_angle = randf() * TAU
+		
+		# Visuals on Enemy
+		var center = enemy_node.position + Vector2(0, -40)
+		var radius = 100.0
+		var offset = Vector2(cos(required_angle), sin(required_angle)) * radius
+		
+		swipe_start_pos = center - offset
+		swipe_end_pos = center + offset
 	
 	guide_line.clear_points()
 	guide_line.add_point(swipe_start_pos)
