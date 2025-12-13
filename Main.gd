@@ -223,14 +223,14 @@ func _add_hat(parent, type, color):
 		line.add_point(Vector2(-20, 0))
 		line.add_point(Vector2(20, 0))
 		var sub = Line2D.new()
-		sub.default_color = color; sub.width=4
+		sub.default_color = color; sub.width = 4
 		sub.add_point(Vector2(12, 0)); sub.add_point(Vector2(12, -30))
 		sub.add_point(Vector2(-12, -30)); sub.add_point(Vector2(-12, 0))
 		hat.add_child(sub)
 	elif type == "Cap":
 		for i in range(9):
 			var a = PI + (i * PI / 8.0)
-			line.add_point(Vector2(cos(a), sin(a)*0.8)*16)
+			line.add_point(Vector2(cos(a), sin(a) * 0.8) * 16)
 		line.add_point(Vector2(16, 0))
 		line.add_point(Vector2(28, 5))
 
@@ -244,7 +244,7 @@ func _add_sword(parent):
 	arms.add_child(sword_node)
 	
 	var blade = Line2D.new()
-	blade.points = [Vector2(0,0), Vector2(10, -50)]
+	blade.points = [Vector2(0, 0), Vector2(10, -50)]
 	blade.default_color = Color(0.8, 1.0, 1.0)
 	blade.width = 3
 	sword_node.add_child(blade)
@@ -383,9 +383,9 @@ func _next_combo_step():
 	
 	# Arrow tip
 	guide_arrow.clear_points()
-	guide_arrow.add_point(swipe_end_pos - (offset.normalized() * 20) + (offset.orthogonal().normalized()*10))
+	guide_arrow.add_point(swipe_end_pos - (offset.normalized() * 20) + (offset.orthogonal().normalized() * 10))
 	guide_arrow.add_point(swipe_end_pos)
-	guide_arrow.add_point(swipe_end_pos - (offset.normalized() * 20) - (offset.orthogonal().normalized()*10))
+	guide_arrow.add_point(swipe_end_pos - (offset.normalized() * 20) - (offset.orthogonal().normalized() * 10))
 
 func _process_swipe(start, end):
 	var vector = end - start
@@ -510,7 +510,7 @@ func _activate_sandevistan():
 	
 	# Timer
 	# 5 Seconds Real Time regardless of slow-mo
-	var t = get_tree().create_timer(SANDEVISTAN_DURATION) 
+	var t = get_tree().create_timer(SANDEVISTAN_DURATION)
 	t.timeout.connect(_deactivate_sandevistan)
 	
 	_next_combo_step()
@@ -534,10 +534,10 @@ func _slash_effect(start, end):
 	var tween = create_tween()
 	tween.tween_property(slash_line, "modulate:a", 0.0, 0.3)
 
-func _pop_text(pos, text, color=Color.WHITE):
+func _pop_text(pos, text, color = Color.WHITE):
 	var l = Label.new()
 	l.text = text
-	l.position = pos + Vector2(randf_range(-20,20), -50)
+	l.position = pos + Vector2(randf_range(-20, 20), -50)
 	l.modulate = color
 	ui_layer.add_child(l)
 	
@@ -597,7 +597,12 @@ func _check_sandevistan_hit(start, end):
 		combo_count += 1
 		energy = min(100, energy + 2)
 		
+		# Juice: BLOOD & SHAKE
+		_spawn_blood(closest) # Spawn at contact point
+		_shake_screen(5.0) # Stronger shake for Sandevistan (normally 2.0)
+		
 		_pop_text(enemy_node.position, "SLICE! " + str(int(damage)), Color.YELLOW)
+		
 		_update_ui()
 		
 		if enemy_hp <= 0:
@@ -607,3 +612,27 @@ func _visual_hit_feedback():
 	var tw = create_tween()
 	tw.tween_property(target_circle, "scale", Vector2(1.2, 1.2), 0.05)
 	tw.tween_property(target_circle, "scale", Vector2(1.0, 1.0), 0.05)
+
+func _spawn_blood(pos):
+	var particles = CPUParticles2D.new()
+	particles.position = pos
+	particles.amount = 16
+	particles.lifetime = 1.0
+	particles.one_shot = true
+	particles.explosiveness = 1.0
+	particles.spread = 180
+	particles.gravity = Vector2(0, 500)
+	particles.initial_velocity_min = 100
+	particles.initial_velocity_max = 300
+	
+	# Pixel visuals
+	particles.scale_amount_min = 4
+	particles.scale_amount_max = 8
+	particles.color = Color(1.0, 0.0, 0.0) # Red
+	
+	add_child(particles)
+	particles.emitting = true
+	
+	# Cleanup
+	await get_tree().create_timer(1.2).timeout
+	particles.queue_free()
