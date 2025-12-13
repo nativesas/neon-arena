@@ -330,6 +330,8 @@ func _next_combo_step():
 	swipe_time_left = swipe_duration
 	
 	# Generate Direction
+	var offset = Vector2.ZERO
+	
 	if is_sandevistan:
 		# SINGLE POINT MASH: Alternate Left<->Right through the center
 		var dir = 1 if combo_count % 2 == 0 else -1
@@ -337,7 +339,7 @@ func _next_combo_step():
 		
 		var center = enemy_node.position + Vector2(0, -40)
 		var radius = 100.0
-		var offset = Vector2(dir, 0) * radius
+		offset = Vector2(dir, 0) * radius
 		
 		swipe_start_pos = center - offset
 		swipe_end_pos = center + offset
@@ -349,7 +351,7 @@ func _next_combo_step():
 		# Visuals on Enemy
 		var center = enemy_node.position + Vector2(0, -40)
 		var radius = 100.0
-		var offset = Vector2(cos(required_angle), sin(required_angle)) * radius
+		offset = Vector2(cos(required_angle), sin(required_angle)) * radius
 		
 		swipe_start_pos = center - offset
 		swipe_end_pos = center + offset
