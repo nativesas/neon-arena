@@ -71,6 +71,7 @@ func _setup_visuals():
 	player_node = _create_stick_figure(Color(0.2, 0.8, 1.0), true)
 	player_node.position = Vector2(250, 450)
 	add_child(player_node)
+	_add_hat(player_node, "TopHat", Color(1.0, 0.8, 0.2)) # Gold Top Hat
 	_animate_idle(player_node)
 
 	# Enemy Stick Figure
@@ -78,81 +79,51 @@ func _setup_visuals():
 	enemy_node.position = Vector2(850, 450)
 	enemy_node.scale.x = -1 # Face left
 	add_child(enemy_node)
+	_add_hat(enemy_node, "Cap", Color(0.2, 1.0, 0.4)) # Green Cap
 	_animate_idle(enemy_node)
 
 	# UI Layer
 	ui_layer = CanvasLayer.new()
 	add_child(ui_layer)
-
-	# Font settings (Basic Label for now, but scaled)
-	hp_label_player = Label.new()
-	hp_label_player.position = Vector2(50, 50)
-	hp_label_player.modulate = Color(0.2, 0.8, 1.0) 
-	hp_label_player.text = "PLAYER"
-	hp_label_player.scale = Vector2(1.5, 1.5)
-	ui_layer.add_child(hp_label_player)
-
-	hp_label_enemy = Label.new()
-	hp_label_enemy.position = Vector2(900, 50)
-	hp_label_enemy.modulate = Color(1.0, 0.2, 0.4)
-	hp_label_enemy.text = "ENEMY"
-	hp_label_enemy.scale = Vector2(1.5, 1.5)
-	ui_layer.add_child(hp_label_enemy)
-
-	status_label = Label.new()
-	status_label.position = Vector2(0, 150)
-	status_label.size = Vector2(1152, 50)
-	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	status_label.modulate = Color(1.0, 1.0, 0.0)
-	status_label.text = "READY?"
-	status_label.scale = Vector2(1.5, 1.5)
-	status_label.pivot_offset = Vector2(576, 25) # Serviceable center
-	ui_layer.add_child(status_label)
-
-	# Swipe Overlay
-	swipe_container = Control.new()
-	ui_layer.add_child(swipe_container)
-	
-	# Connect Line
-	swipe_line = Line2D.new()
-	swipe_line.width = 16.0
-	swipe_line.default_color = Color(1, 1, 1, 0.1)
-	swipe_line.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	swipe_line.end_cap_mode = Line2D.LINE_CAP_ROUND
-	swipe_container.add_child(swipe_line)
-	
-	# Drag Trail
-	drag_line = Line2D.new()
-	drag_line.width = 8.0
-	drag_line.default_color = Color(1, 1, 0, 1) # Yellow
-	drag_line.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	drag_line.end_cap_mode = Line2D.LINE_CAP_ROUND
-	swipe_container.add_child(drag_line)
-
-	# Start Circle (Outer)
-	start_circle = Line2D.new() # Using Line2D circle
-	_create_circle_points(start_circle, 32, 32)
-	start_circle.default_color = Color(0.4, 1.0, 0.4) # Green
-	start_circle.width = 4
-	swipe_container.add_child(start_circle)
-
-	# Approach Circle
-	approach_circle = Line2D.new()
-	_create_circle_points(approach_circle, 80, 32)
-	approach_circle.default_color = Color(0.4, 1.0, 0.4, 0.5)
-	approach_circle.width = 2
-	swipe_container.add_child(approach_circle)
-	
-	# End Circle
-	end_circle = Line2D.new()
-	_create_circle_points(end_circle, 32, 32)
-	end_circle.default_color = Color(1.0, 0.4, 0.4) # Red
-	end_circle.width = 4
-	swipe_container.add_child(end_circle)
-	
-	swipe_container.visible = false
+# ... (rest of _setup_visuals) ...
 
 # --- Visual Helpers ---
+
+func _add_hat(parent_node, type, color):
+	# Head is the second child (index 1) based on _create_stick_figure
+	var head = parent_node.get_child(1)
+	
+	var hat = Node2D.new()
+	# Hat sits on top of head (radius ~15)
+	hat.position = Vector2(0, -15) 
+	head.add_child(hat)
+	
+	if type == "TopHat":
+		var line = Line2D.new()
+		line.default_color = color
+		line.width = 4
+		# Brim
+		line.add_point(Vector2(-20, 0))
+		line.add_point(Vector2(20, 0))
+		# Top
+		line.add_point(Vector2(12, 0))
+		line.add_point(Vector2(12, -30))
+		line.add_point(Vector2(-12, -30))
+		line.add_point(Vector2(-12, 0))
+		hat.add_child(line)
+		
+	elif type == "Cap":
+		var line = Line2D.new()
+		line.default_color = color
+		line.width = 4
+		# Dome
+		for i in range(16):
+			var angle = PI + (i * PI / 15.0) # Semicircle
+			line.add_point(Vector2(cos(angle), sin(angle)*0.8) * 16)
+		# Bill
+		line.add_point(Vector2(16, 0))
+		line.add_point(Vector2(28, 5))
+		hat.add_child(line)
 
 func _create_stick_figure(color, is_player):
 	var node = Node2D.new()
