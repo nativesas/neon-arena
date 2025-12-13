@@ -9,9 +9,7 @@ const DIFFICULTY = 2 # 1-3
 # State
 var player_hp = PLAYER_HP_MAX
 var enemy_hp = ENEMY_HP_MAX
-var current_turn = "Player" # "Player" or "Enemy"
-
-# Swipe State
+var current_turn = "Player"
 var swipe_active = false
 var swipe_start_pos = Vector2()
 var swipe_end_pos = Vector2()
@@ -19,7 +17,9 @@ var is_dragging = false
 var swipe_time_left = 0.0
 var swipe_duration = 0.0
 
-# UI Nodes
+# Visuals
+var player_node
+var enemy_node
 var ui_layer
 var hp_label_player
 var hp_label_enemy
@@ -30,108 +30,208 @@ var swipe_container
 var start_circle
 var end_circle
 var swipe_line
-var timer_bar
-
-# Game Nodes
-var player_rect
-var enemy_rect
+var approach_circle
+var drag_line
 
 func _ready():
+	_setup_environment()
 	_setup_visuals()
 	_update_ui()
 	_start_battle()
 
+func _setup_environment():
+	# World Environment for Glow
+	var world_env = WorldEnvironment.new()
+	var env = Environment.new()
+	env.background_mode = Environment.BG_CANVAS
+	env.glow_enabled = true
+	env.glow_intensity = 1.0
+	env.glow_strength = 1.1
+	env.glow_bloom = 0.2
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
+	world_env.environment = env
+	add_child(world_env)
+
 func _setup_visuals():
 	# Background
 	var bg = ColorRect.new()
-	bg.color = Color(0.1, 0.1, 0.1)
+	bg.color = Color(0.05, 0.05, 0.1) # Dark Blue-Black
 	bg.size = get_viewport_rect().size
 	add_child(bg)
 
-	# Arena Floor
-	var floor_rect = ColorRect.new()
-	floor_rect.color = Color(0.3, 0.3, 0.3)
-	floor_rect.size = Vector2(800, 200)
-	floor_rect.position = Vector2(176, 400)
-	add_child(floor_rect)
+	# Floor (Neon Line)
+	var floor_line = Line2D.new()
+	floor_line.default_color = Color(0.0, 1.0, 1.0, 0.5) # Cyan
+	floor_line.width = 4
+	floor_line.add_point(Vector2(100, 450))
+	floor_line.add_point(Vector2(1052, 450))
+	add_child(floor_line)
 
-	# Player
-	player_rect = ColorRect.new()
-	player_rect.color = Color(0.2, 0.6, 1.0) # Blue
-	player_rect.size = Vector2(64, 128)
-	player_rect.position = Vector2(250, 272)
-	add_child(player_rect)
+	# Player Stick Figure
+	player_node = _create_stick_figure(Color(0.2, 0.8, 1.0), true)
+	player_node.position = Vector2(250, 450)
+	add_child(player_node)
+	_animate_idle(player_node)
 
-	# Enemy
-	enemy_rect = ColorRect.new()
-	enemy_rect.color = Color(1.0, 0.3, 0.3) # Red
-	enemy_rect.size = Vector2(64, 128)
-	enemy_rect.position = Vector2(850, 272)
-	add_child(enemy_rect)
+	# Enemy Stick Figure
+	enemy_node = _create_stick_figure(Color(1.0, 0.2, 0.4), false)
+	enemy_node.position = Vector2(850, 450)
+	enemy_node.scale.x = -1 # Face left
+	add_child(enemy_node)
+	_animate_idle(enemy_node)
 
 	# UI Layer
 	ui_layer = CanvasLayer.new()
 	add_child(ui_layer)
 
-	# Stats UI
+	# Font settings (Basic Label for now, but scaled)
 	hp_label_player = Label.new()
 	hp_label_player.position = Vector2(50, 50)
-	hp_label_player.modulate = Color(0.4, 0.8, 1.0) 
-	hp_label_player.text = "PLAYER HP: 100"
+	hp_label_player.modulate = Color(0.2, 0.8, 1.0) 
+	hp_label_player.text = "PLAYER"
+	hp_label_player.scale = Vector2(1.5, 1.5)
 	ui_layer.add_child(hp_label_player)
 
 	hp_label_enemy = Label.new()
 	hp_label_enemy.position = Vector2(900, 50)
-	hp_label_enemy.modulate = Color(1.0, 0.5, 0.5)
-	hp_label_enemy.text = "ENEMY HP: 100"
+	hp_label_enemy.modulate = Color(1.0, 0.2, 0.4)
+	hp_label_enemy.text = "ENEMY"
+	hp_label_enemy.scale = Vector2(1.5, 1.5)
 	ui_layer.add_child(hp_label_enemy)
 
 	status_label = Label.new()
 	status_label.position = Vector2(0, 150)
 	status_label.size = Vector2(1152, 50)
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	status_label.text = "BATTLE START!"
+	status_label.modulate = Color(1.0, 1.0, 0.0)
+	status_label.text = "READY?"
+	status_label.scale = Vector2(1.5, 1.5)
+	status_label.pivot_offset = Vector2(576, 25) # Serviceable center
 	ui_layer.add_child(status_label)
 
-	# Swipe Container
+	# Swipe Overlay
 	swipe_container = Control.new()
 	ui_layer.add_child(swipe_container)
 	
+	# Connect Line
 	swipe_line = Line2D.new()
-	swipe_line.width = 10.0
-	swipe_line.default_color = Color(1, 1, 1, 0.5)
+	swipe_line.width = 16.0
+	swipe_line.default_color = Color(1, 1, 1, 0.1)
+	swipe_line.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	swipe_line.end_cap_mode = Line2D.LINE_CAP_ROUND
 	swipe_container.add_child(swipe_line)
 	
-	start_circle = ColorRect.new() # Using Rect as simple 'circle' proxy
-	start_circle.color = Color.GREEN
-	start_circle.size = Vector2(40, 40)
+	# Drag Trail
+	drag_line = Line2D.new()
+	drag_line.width = 8.0
+	drag_line.default_color = Color(1, 1, 0, 1) # Yellow
+	drag_line.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	drag_line.end_cap_mode = Line2D.LINE_CAP_ROUND
+	swipe_container.add_child(drag_line)
+
+	# Start Circle (Outer)
+	start_circle = Line2D.new() # Using Line2D circle
+	_create_circle_points(start_circle, 32, 32)
+	start_circle.default_color = Color(0.4, 1.0, 0.4) # Green
+	start_circle.width = 4
 	swipe_container.add_child(start_circle)
+
+	# Approach Circle
+	approach_circle = Line2D.new()
+	_create_circle_points(approach_circle, 80, 32)
+	approach_circle.default_color = Color(0.4, 1.0, 0.4, 0.5)
+	approach_circle.width = 2
+	swipe_container.add_child(approach_circle)
 	
-	end_circle = ColorRect.new()
-	end_circle.color = Color.RED
-	end_circle.size = Vector2(40, 40)
+	# End Circle
+	end_circle = Line2D.new()
+	_create_circle_points(end_circle, 32, 32)
+	end_circle.default_color = Color(1.0, 0.4, 0.4) # Red
+	end_circle.width = 4
 	swipe_container.add_child(end_circle)
 	
-	timer_bar = ColorRect.new()
-	timer_bar.color = Color.CYAN
-	timer_bar.size = Vector2(0, 5)
-	timer_bar.position = Vector2(0, 0)
-	swipe_container.add_child(timer_bar)
-	
 	swipe_container.visible = false
+
+# --- Visual Helpers ---
+
+func _create_stick_figure(color, is_player):
+	var node = Node2D.new()
+	
+	# Body
+	var body = Line2D.new()
+	body.width = 6
+	body.default_color = color
+	body.add_point(Vector2(0, 0)) # Hip
+	body.add_point(Vector2(0, -60)) # Shoulder
+	node.add_child(body)
+	
+	# Head
+	var head = Line2D.new()
+	head.width = 6
+	head.default_color = color
+	_create_circle_points(head, 15, 16)
+	head.position = Vector2(0, -80)
+	node.add_child(head)
+	
+	# Arms (Simple V)
+	var arms = Line2D.new()
+	arms.width = 6
+	arms.default_color = color
+	arms.add_point(Vector2(-20, -30)) # Hand L
+	arms.add_point(Vector2(0, -60))   # Shoulder
+	arms.add_point(Vector2(20, -30))  # Hand R
+	node.add_child(arms)
+	
+	# Legs
+	var legs = Line2D.new()
+	legs.width = 6
+	legs.default_color = color
+	legs.add_point(Vector2(-15, 0)) # Foot L (offset by animation)
+	legs.add_point(Vector2(0, 0))   # Hip
+	legs.add_point(Vector2(15, 0))  # Foot R
+	node.add_child(legs)
+	
+	return node
+
+func _create_circle_points(line_node, radius, segments):
+	line_node.clear_points()
+	for i in range(segments + 1):
+		var angle = i * TAU / segments
+		line_node.add_point(Vector2(cos(angle), sin(angle)) * radius)
+
+func _animate_idle(node):
+	var tween = create_tween().set_loops()
+	tween.tween_property(node, "scale", Vector2(1.05, 0.95), 1.0).set_trans(Tween.TRANS_SINE)
+	tween.tween_property(node, "scale", Vector2(0.95, 1.05), 1.0).set_trans(Tween.TRANS_SINE)
+	if node == enemy_node:
+		# Keep X flipped
+		tween.stop()
+		tween = create_tween().set_loops()
+		tween.tween_property(node, "scale", Vector2(-1.05, 0.95), 1.0).set_trans(Tween.TRANS_SINE)
+		tween.tween_property(node, "scale", Vector2(-0.95, 1.05), 1.0).set_trans(Tween.TRANS_SINE)
+
+
+# --- Game Logic ---
 
 func _process(delta):
 	if swipe_active:
 		swipe_time_left -= delta
 		
-		# Update Timer Bar
+		# Animate Approach Circle
 		if swipe_duration > 0:
 			var ratio = swipe_time_left / swipe_duration
-			timer_bar.size = Vector2(100 * ratio, 10)
-			timer_bar.position = start_circle.position + Vector2(0, -20)
+			# Shrinks from 2.5x to 1.0x
+			var s = 1.0 + (ratio * 1.5)
+			approach_circle.scale = Vector2(s, s)
 		
 		if swipe_time_left <= 0:
 			_fail_swipe("TOO SLOW!")
+	
+	if is_dragging:
+		# Update drag trail
+		drag_line.add_point(swipe_container.get_local_mouse_position())
+		if drag_line.get_point_count() > 10:
+			drag_line.remove_point(0)
 
 func _input(event):
 	if not swipe_active:
@@ -140,19 +240,21 @@ func _input(event):
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed:
-				# Check if clicked near start
-				if start_circle.get_global_rect().has_point(event.position):
+				# Simple Hitbox for Start Circle
+				var d = event.position.distance_to(start_circle.position)
+				if d < 40:
 					is_dragging = true
-					start_circle.color = Color.YELLOW # Feedback
+					drag_line.clear_points()
+					drag_line.add_point(event.position)
+					start_circle.default_color = Color.YELLOW
 			else:
-				# Released
 				if is_dragging:
 					is_dragging = false
-					# Check if released near end
-					if end_circle.get_global_rect().has_point(event.position):
+					var d = event.position.distance_to(end_circle.position)
+					if d < 40:
 						_succeed_swipe()
 					else:
-						_fail_swipe("MISSED END!")
+						_fail_swipe("MISSED!")
 
 func _start_battle():
 	player_hp = PLAYER_HP_MAX
@@ -162,33 +264,33 @@ func _start_battle():
 
 func _start_player_turn():
 	current_turn = "Player"
-	status_label.text = "PLAYER TURN! SWIPE GREEN -> RED!"
+	_show_popup("PLAYER TURN")
 	_generate_swipe()
 
 func _generate_swipe():
 	swipe_active = true
 	is_dragging = false
 	swipe_container.visible = true
+	drag_line.clear_points()
 	
-	# Difficulty settings
-	var window = 2.0 - (DIFFICULTY * 0.4) # 1.6s, 1.2s, 0.8s
+	var window = 2.0 - (DIFFICULTY * 0.4)
 	swipe_duration = window
 	swipe_time_left = window
 	
-	# Random positions near enemy
-	var center = enemy_rect.position + enemy_rect.size / 2.0
+	var center = enemy_node.position + Vector2(0, -60) # Center on enemy body
 	var offset_range = 100 + (DIFFICULTY * 30)
-	
 	var angle = randf() * TAU
 	var offset = Vector2(cos(angle), sin(angle)) * offset_range
 	
 	swipe_start_pos = center - offset
 	swipe_end_pos = center + offset
 	
-	# Update visuals
-	start_circle.position = swipe_start_pos - start_circle.size / 2.0
-	end_circle.position = swipe_end_pos - end_circle.size / 2.0
-	start_circle.color = Color.GREEN
+	start_circle.position = swipe_start_pos
+	end_circle.position = swipe_end_pos
+	approach_circle.position = swipe_start_pos
+	approach_circle.scale = Vector2(2.5, 2.5) # Reset scale
+	
+	start_circle.default_color = Color(0.4, 1.0, 0.4) # Reset color
 	
 	swipe_line.clear_points()
 	swipe_line.add_point(swipe_start_pos)
@@ -198,17 +300,19 @@ func _succeed_swipe():
 	swipe_active = false
 	swipe_container.visible = false
 	
-	# Perfect logic could be speed based, for now just success
 	var damage = BASE_DAMAGE
+	var note = "GOOD!"
 	
-	# Fast swipe = Critical?
 	if swipe_time_left > swipe_duration * 0.5:
 		damage *= 2
-		_show_feedback("FAST SWIPE! CRITICAL! %d DMG" % damage)
-	else:
-		_show_feedback("GOOD! %d DMG" % damage)
-
+		note = "PERFECT!"
+		_shake_screen(5.0)
+	
+	_animate_attack(player_node, enemy_node)
+	await get_tree().create_timer(0.2).timeout
+	
 	enemy_hp = max(0, enemy_hp - damage)
+	_pop_damage(damage, enemy_node.position, note)
 	_update_ui()
 	
 	if enemy_hp <= 0:
@@ -220,50 +324,86 @@ func _succeed_swipe():
 func _fail_swipe(reason):
 	swipe_active = false
 	swipe_container.visible = false
-	_show_feedback(reason + " 0 DMG")
+	_pop_damage(0, enemy_node.position, reason)
 	
 	await get_tree().create_timer(1.0).timeout
 	_start_enemy_turn()
 
 func _start_enemy_turn():
 	current_turn = "Enemy"
-	status_label.text = "ENEMY ATTACKING..."
 	
-	await get_tree().create_timer(1.5).timeout
+	await get_tree().create_timer(1.0).timeout
 	
-	# Simulate Enemy Attack
+	# Attack Anim
+	_animate_attack(enemy_node, player_node)
+	await get_tree().create_timer(0.2).timeout
+	
 	var roll = randf()
 	var damage = BASE_DAMAGE
-	var result_text = "ENEMY HIT!"
+	var note = "HIT"
 	
 	if roll > 0.8:
 		damage *= 2
-		result_text = "CRITICAL HIT by ENEMY!"
+		note = "CRITICAL"
+		_shake_screen(10.0)
 	elif roll < 0.2:
 		damage = 0
-		result_text = "ENEMY MISSED!"
+		note = "MISS"
 
 	player_hp = max(0, player_hp - damage)
-	_show_feedback(result_text)
+	_pop_damage(damage, player_node.position, note)
 	_update_ui()
 	_check_game_over()
 	
 	if player_hp > 0:
+		await get_tree().create_timer(1.0).timeout
 		_start_player_turn()
 
-func _show_feedback(text):
-	status_label.text = text
-
 func _update_ui():
-	hp_label_player.text = "PLAYER HP: %d / %d" % [player_hp, PLAYER_HP_MAX]
-	hp_label_enemy.text = "ENEMY HP: %d / %d" % [enemy_hp, ENEMY_HP_MAX]
+	hp_label_player.text = "HP: %d" % player_hp
+	hp_label_enemy.text = "HP: %d" % enemy_hp
+
+func _pop_damage(amount, pos, text=""):
+	var label = Label.new()
+	label.text = text + " " + str(amount)
+	label.modulate = Color(1.0, 1.0, 0.2)
+	label.position = pos + Vector2(0, -100)
+	label.scale = Vector2(2, 2)
+	ui_layer.add_child(label)
+	
+	var tween = create_tween()
+	tween.tween_property(label, "position", pos + Vector2(0, -200), 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "modulate:a", 0.0, 0.5)
+	tween.tween_callback(label.queue_free)
+
+func _show_popup(text):
+	status_label.text = text
+	status_label.scale = Vector2(0, 0)
+	var tween = create_tween()
+	tween.tween_property(status_label, "scale", Vector2(1.5, 1.5), 0.5).set_trans(Tween.TRANS_ELASTIC)
+
+func _animate_attack(attacker, target):
+	var start = attacker.position
+	var end = target.position - (target.position - attacker.position).normalized() * 100
+	
+	var tween = create_tween()
+	tween.tween_property(attacker, "position", end, 0.1).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_IN)
+	tween.tween_property(attacker, "position", start, 0.3).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+
+func _shake_screen(amount):
+	var tween = create_tween()
+	var org = Vector2(0,0)
+	for i in range(10):
+		var off = Vector2(randf_range(-amount, amount), randf_range(-amount, amount))
+		tween.tween_property(self, "position", off, 0.05)
+	tween.tween_property(self, "position", org, 0.05)
 
 func _check_game_over():
 	if player_hp <= 0:
-		status_label.text = "DEFEAT! RELOADING..."
+		_show_popup("DEFEAT")
 		await get_tree().create_timer(3.0).timeout
 		get_tree().reload_current_scene()
 	elif enemy_hp <= 0:
-		status_label.text = "VICTORY! RELOADING..."
+		_show_popup("VICTORY")
 		await get_tree().create_timer(3.0).timeout
 		get_tree().reload_current_scene()
