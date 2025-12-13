@@ -2,7 +2,7 @@ extends Node2D
 
 # Config
 const PLAYER_HP_MAX = 100
-const ENEMY_HP_MAX = 100
+const ENEMY_HP_MAX = 300
 const BASE_DAMAGE = 10
 const MAX_COMBO = 5
 const SANDEVISTAN_DURATION = 5.0 # Real time seconds (affected by timescale)
