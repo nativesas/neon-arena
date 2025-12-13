@@ -275,17 +275,27 @@ func _process(delta):
 		_activate_sandevistan()
 
 	if swipe_active:
-		swipe_time_left -= delta / Engine.time_scale
-		
-		# Feedback color
-		var ratio = swipe_time_left / swipe_duration
-		guide_line.default_color.a = 0.1 + (ratio * 0.2)
-		
-		if swipe_time_left <= 0:
-			_fail_swipe("TOO SLOW")
+		# Disable timeout for Sandevistan (it relies on global timer)
+		if not is_sandevistan:
+			swipe_time_left -= delta / Engine.time_scale
+			
+			# Feedback color
+			var ratio = swipe_time_left / swipe_duration
+			guide_line.default_color.a = 0.1 + (ratio * 0.2)
+			
+			if swipe_time_left <= 0:
+				_fail_swipe("TOO SLOW")
 	
 	if is_dragging:
-		drag_trail.add_point(swipe_overlay.get_local_mouse_position())
+		var current_pos = swipe_overlay.get_local_mouse_position()
+		
+		# FRUIT NINJA CONTINUOUS HIT
+		if is_sandevistan and swipe_active:
+			if drag_trail.get_point_count() > 0:
+				var last_pos = drag_trail.get_point_position(drag_trail.get_point_count() - 1)
+				_check_sandevistan_hit(last_pos, current_pos)
+		
+		drag_trail.add_point(current_pos)
 		if drag_trail.get_point_count() > 10:
 			drag_trail.remove_point(0)
 
@@ -383,15 +393,8 @@ func _process_swipe(start, end):
 		return # Too short
 	
 	if is_sandevistan:
-		# Hit Detection: Cut through the circle?
-		# Simple check: distance from segment to center
-		var center = target_circle.position
-		var closest = Geometry2D.get_closest_point_to_segment(center, start, end)
-		var dist = center.distance_to(closest)
-		
-		if dist < 40: # Radius of circle
-			_succeed_swipe(1.0)
-		return # Ignore misses in Ninja mode to allow spam logic
+		return # Handled in _process continuously
+
 
 	var angle = vector.angle()
 	# Compare angle with required_angle
@@ -575,3 +578,32 @@ func _check_game_over():
 		_status("VICTORY")
 		await get_tree().create_timer(2).timeout
 		get_tree().reload_current_scene()
+
+func _check_sandevistan_hit(start, end):
+	# Don't hit if too short movement to avoid jitter spam
+	if start.distance_to(end) < 5:
+		return
+
+	var center = target_circle.position
+	var closest = Geometry2D.get_closest_point_to_segment(center, start, end)
+	var dist = center.distance_to(closest)
+	
+	if dist < 40: # Hit!
+		_visual_hit_feedback()
+		
+		# Apply damage
+		var damage = BASE_DAMAGE * 0.5
+		enemy_hp = max(0, enemy_hp - damage)
+		combo_count += 1
+		energy = min(100, energy + 2)
+		
+		_pop_text(enemy_node.position, "SLICE! " + str(int(damage)), Color.YELLOW)
+		_update_ui()
+		
+		if enemy_hp <= 0:
+			_check_game_over()
+
+func _visual_hit_feedback():
+	var tw = create_tween()
+	tw.tween_property(target_circle, "scale", Vector2(1.2, 1.2), 0.05)
+	tw.tween_property(target_circle, "scale", Vector2(1.0, 1.0), 0.05)
