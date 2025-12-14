@@ -1,0 +1,19 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run Godot",
+            "type": "process",
+            "command": "C:/Users/nativ/Downloads/Godot_v4.5.1-stable_win64.exe/Godot_v4.5.1-stable_win64.exe",
+            "args": [
+                "--path",
+                "${workspaceFolder}"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}

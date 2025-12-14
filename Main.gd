@@ -5,52 +5,36 @@ const PLAYER_HP_MAX = 100
 const ENEMY_HP_MAX = 300
 const BASE_DAMAGE = 10
 const MAX_COMBO = 5
-const SANDEVISTAN_DURATION = 5.0 # Real time seconds (affected by timescale)
+const SANDEVISTAN_DURATION = 2.0
+
+const SwipeInputSrc = preload("res://scenes/combat/SwipeInput.gd")
 
 # State
 var player_hp = PLAYER_HP_MAX
 var enemy_hp = ENEMY_HP_MAX
-var energy = 0 # 0-100
+var energy = 0
 var current_turn = "Player"
-
-# Combat State
 var combo_count = 0
 var is_sandevistan = false
-var swipe_active = false
-var swipe_start_pos = Vector2()
-var swipe_end_pos = Vector2()
-var swipe_time_left = 0.0
-var swipe_duration = 0.0
-var required_angle = 0.0 # Radians
 
-# Input State
-var is_dragging = false
-var drag_start = Vector2()
+# Components
+var player: Character
+var enemy: Character
+var hud: HUD
+var swipe_input: SwipeInputSrc
+var ui_layer: CanvasLayer
+var current_step_timer: SceneTreeTimer
+var current_step_duration: float = 0.0
+var sandevistan_duration_timer: SceneTreeTimer
 
-# Visuals
-var player_node
-var enemy_node
-var player_sword
-var enemy_sword
-var ui_layer
-var hp_label_player
-var hp_label_enemy
-var status_label
-var energy_bar
-
-# Overlay Visuals
-var swipe_overlay
-var guide_arrow
-var guide_line
-var drag_trail
-var slash_line
-var target_circle
+# Visuals managed by Main
+# Visuals managed by Main
+# slash_line replaced by local instances
 
 func _ready():
 	randomize()
 	_setup_environment()
 	_setup_visuals()
-	_update_ui()
 	_start_battle()
 
 func _setup_environment():
@@ -60,491 +44,368 @@ func _setup_environment():
 	env.glow_enabled = true
 	env.glow_intensity = 0.8
 	env.glow_strength = 1.2
-	env.glow_bloom = 0.3
 	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
 	world_env.environment = env
 	add_child(world_env)
-
-func _setup_visuals():
-	# BG
+	
+	# Basic static visuals (BG/Floor)
 	var bg = ColorRect.new()
 	bg.color = Color(0.05, 0.05, 0.1)
 	bg.size = get_viewport_rect().size
 	add_child(bg)
 	
-	# Floor
 	var floor_line = Line2D.new()
 	floor_line.default_color = Color(0.0, 1.0, 1.0, 0.5)
 	floor_line.width = 4
 	floor_line.add_point(Vector2(50, 500))
 	floor_line.add_point(Vector2(1100, 500))
 	add_child(floor_line)
+	
+	# Slash Vfx
+	# Instantiated per-attack in _slash_effect
 
+func _setup_visuals():
 	# Characters
-	player_node = _create_stick_figure(Color(0.2, 0.8, 1.0), true)
-	player_node.position = Vector2(250, 480)
-	add_child(player_node)
-	_add_hat(player_node, "TopHat", Color(1.0, 0.8, 0.2))
-	player_sword = _add_sword(player_node)
-	_animate_idle(player_node)
-
-	enemy_node = _create_stick_figure(Color(1.0, 0.2, 0.4), false)
-	enemy_node.position = Vector2(850, 480)
-	enemy_node.scale.x = -1
-	add_child(enemy_node)
-	_add_hat(enemy_node, "Cap", Color(0.2, 1.0, 0.4))
-	enemy_sword = _add_sword(enemy_node)
-	_animate_idle(enemy_node)
-
-	# UI
+	player = Character.new()
+	player.setup(Color.CYAN, true)
+	# Skeleton is ~80 units tall (hip to feet), so position at 500-80=420
+	player.set_origin(Vector2(100, 420))
+	player.position = Vector2(100, 420)
+	add_child(player)
+	
+	enemy = Character.new()
+	enemy.position = Vector2(1000, 420)
+	enemy.setup(Color.RED, false)
+	enemy.set_origin(Vector2(1000, 420))
+	enemy.scale.x = -1
+	add_child(enemy)
+	
+	# UI Layer
 	ui_layer = CanvasLayer.new()
 	add_child(ui_layer)
 	
-	hp_label_player = _create_label(Vector2(50, 50), "PLAYER", Color(0.2, 0.8, 1.0))
-	hp_label_enemy = _create_label(Vector2(900, 50), "ENEMY", Color(1.0, 0.2, 0.4))
-	status_label = _create_label(Vector2(0, 150), "", Color.YELLOW)
-	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	status_label.size = Vector2(1152, 50)
+	# HUD
+	hud = load("res://scenes/ui/HUD.tscn").instantiate()
+	ui_layer.add_child(hud)
 	
-	# Energy Bar
-	var bar_bg = ColorRect.new()
-	bar_bg.color = Color(0.2, 0.2, 0.2)
-	bar_bg.size = Vector2(200, 20)
-	bar_bg.position = Vector2(50, 100)
-	ui_layer.add_child(bar_bg)
+	# Victory Screen
+	var victory_screen = load("res://scenes/ui/VictoryScreen.tscn").instantiate()
+	add_child(victory_screen)
+	victory_screen.continue_pressed.connect(_on_victory_continue)
+	set_meta("victory_screen", victory_screen)
 	
-	energy_bar = ColorRect.new()
-	energy_bar.color = Color(1.0, 0.5, 0.0) # Orange
-	energy_bar.size = Vector2(0, 20)
-	energy_bar.position = Vector2(50, 100)
-	ui_layer.add_child(energy_bar)
+	# Swipe Input (Adding to UI layer to keep it stable vs screen shake, 
+	# but could also be in world if we want trails to follow world. 
+	# Original code had it in UI layer.)
+	swipe_input = SwipeInputSrc.new()
+	ui_layer.add_child(swipe_input)
 	
-	var en_label = Label.new()
-	en_label.text = "SANDEVISTAN [SPACE]"
-	en_label.position = Vector2(50, 80)
-	en_label.scale = Vector2(0.8, 0.8)
-	ui_layer.add_child(en_label)
-
-	# Overlay
-	swipe_overlay = Node2D.new()
-	ui_layer.add_child(swipe_overlay)
-	
-	guide_line = Line2D.new()
-	guide_line.width = 40
-	guide_line.default_color = Color(1, 1, 1, 0.1)
-	guide_line.texture_mode = Line2D.LINE_TEXTURE_TILE
-	guide_line.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	guide_line.end_cap_mode = Line2D.LINE_CAP_ROUND
-	swipe_overlay.add_child(guide_line)
-	
-	guide_arrow = Line2D.new()
-	guide_arrow.width = 10
-	guide_arrow.default_color = Color(0.5, 1.0, 0.5, 0.8)
-	swipe_overlay.add_child(guide_arrow)
-	
-	drag_trail = Line2D.new()
-	drag_trail.width = 8
-	drag_trail.default_color = Color.CYAN
-	swipe_overlay.add_child(drag_trail)
-	
-	slash_line = Line2D.new()
-	slash_line.width = 6
-	slash_line.default_color = Color(1, 1, 1, 0.8)
-	add_child(slash_line) # In world space for shake compatibility
-
-	target_circle = Line2D.new()
-	_create_circle(target_circle, 40)
-	target_circle.default_color = Color(1, 0.2, 0.2, 0.8) # Red target
-	target_circle.width = 4
-	target_circle.visible = false
-	swipe_overlay.add_child(target_circle)
-
-func _create_label(pos, text, color):
-	var l = Label.new()
-	l.position = pos
-	l.text = text
-	l.modulate = color
-	l.scale = Vector2(1.5, 1.5)
-	ui_layer.add_child(l)
-	return l
-
-func _create_stick_figure(color, is_player):
-	var node = Node2D.new()
-	
-	var body = Line2D.new()
-	body.width = 6
-	body.default_color = color
-	body.add_point(Vector2(0, 0))
-	body.add_point(Vector2(0, -60))
-	node.add_child(body)
-	
-	var head = Line2D.new()
-	head.width = 6
-	head.default_color = color
-	_create_circle(head, 15)
-	head.position = Vector2(0, -80)
-	node.add_child(head)
-	
-	var arms = Line2D.new()
-	arms.width = 6
-	arms.default_color = color
-	arms.add_point(Vector2(-20, -30))
-	arms.add_point(Vector2(0, -60))
-	arms.add_point(Vector2(20, -30))
-	node.add_child(arms)
-	
-	var legs = Line2D.new()
-	legs.width = 6
-	legs.default_color = color
-	legs.add_point(Vector2(-15, 0))
-	legs.add_point(Vector2(0, 0))
-	legs.add_point(Vector2(15, 0))
-	node.add_child(legs)
-	
-	return node
-
-func _create_circle(line, radius):
-	for i in range(17):
-		var angle = i * TAU / 16.0
-		line.add_point(Vector2(cos(angle), sin(angle)) * radius)
-
-func _add_hat(parent, type, color):
-	var head = parent.get_child(1)
-	var hat = Node2D.new()
-	hat.position = Vector2(0, -15)
-	head.add_child(hat)
-	
-	var line = Line2D.new()
-	line.default_color = color
-	line.width = 4
-	hat.add_child(line)
-	
-	if type == "TopHat":
-		line.add_point(Vector2(-20, 0))
-		line.add_point(Vector2(20, 0))
-		var sub = Line2D.new()
-		sub.default_color = color; sub.width = 4
-		sub.add_point(Vector2(12, 0)); sub.add_point(Vector2(12, -30))
-		sub.add_point(Vector2(-12, -30)); sub.add_point(Vector2(-12, 0))
-		hat.add_child(sub)
-	elif type == "Cap":
-		for i in range(9):
-			var a = PI + (i * PI / 8.0)
-			line.add_point(Vector2(cos(a), sin(a) * 0.8) * 16)
-		line.add_point(Vector2(16, 0))
-		line.add_point(Vector2(28, 5))
-
-func _add_sword(parent):
-	var arms = parent.get_child(2)
-	# Right hand is index 2
-	var hand_pos = arms.get_point_position(2)
-	
-	var sword_node = Node2D.new()
-	sword_node.position = hand_pos
-	arms.add_child(sword_node)
-	
-	var blade = Line2D.new()
-	blade.points = [Vector2(0, 0), Vector2(10, -50)]
-	blade.default_color = Color(0.8, 1.0, 1.0)
-	blade.width = 3
-	sword_node.add_child(blade)
-	
-	var hilt = Line2D.new() # Crossguard
-	hilt.points = [Vector2(-5, -5), Vector2(8, 2)]
-	hilt.default_color = Color.GRAY
-	hilt.width = 4
-	sword_node.add_child(hilt)
-	
-	return sword_node
-
-func _animate_idle(node):
-	var tween = create_tween().set_loops()
-	var s = 1.0 if node == player_node else -1.0
-	tween.tween_property(node, "scale", Vector2(s * 1.05, 0.95), 1.0).set_trans(Tween.TRANS_SINE)
-	tween.tween_property(node, "scale", Vector2(s * 0.95, 1.05), 1.0).set_trans(Tween.TRANS_SINE)
-
-
-# --- Game Logic ---
-
-func _process(delta):
-	# Update Energy Bar
-	energy_bar.size.x = (energy / 100.0) * 200.0
-	
-	# Sandevistan Input
-	if Input.is_action_just_pressed("ui_accept") and not is_sandevistan and current_turn == "Player" and energy >= 100:
-		_activate_sandevistan()
-
-	if swipe_active:
-		# Disable timeout for Sandevistan (it relies on global timer)
-		if not is_sandevistan:
-			swipe_time_left -= delta / Engine.time_scale
-			
-			# Feedback color
-			var ratio = swipe_time_left / swipe_duration
-			guide_line.default_color.a = 0.1 + (ratio * 0.2)
-			
-			if swipe_time_left <= 0:
-				_fail_swipe("TOO SLOW")
-	
-	if is_dragging:
-		var current_pos = swipe_overlay.get_local_mouse_position()
-		
-		# FRUIT NINJA CONTINUOUS HIT
-		if is_sandevistan and swipe_active:
-			if drag_trail.get_point_count() > 0:
-				var last_pos = drag_trail.get_point_position(drag_trail.get_point_count() - 1)
-				_check_sandevistan_hit(last_pos, current_pos)
-		
-		drag_trail.add_point(current_pos)
-		if drag_trail.get_point_count() > 10:
-			drag_trail.remove_point(0)
-
-func _input(event):
-	if not swipe_active: return
-	
-	if event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_LEFT:
-			if event.pressed:
-				is_dragging = true
-				drag_start = event.position
-				drag_trail.clear_points()
-				drag_trail.add_point(drag_start)
-			else:
-				# Release
-				if is_dragging:
-					is_dragging = false
-					var drag_end = event.position
-					_process_swipe(drag_start, drag_end)
+	# Signals
+	swipe_input.swipe_ended.connect(_on_swipe_ended)
+	swipe_input.swipe_updated.connect(_on_swipe_updated)
+	swipe_input.swipe_started.connect(_on_swipe_started)
 
 func _start_battle():
 	player_hp = PLAYER_HP_MAX
 	enemy_hp = ENEMY_HP_MAX
 	energy = 50
-	_update_ui()
+	
+	hud.update_health(player_hp, enemy_hp)
+	hud.update_energy(energy)
+	
 	_start_player_turn()
 
-func _start_player_turn():
-	current_turn = "Player"
-	combo_count = 0
-	_status("YOUR TURN")
-	await get_tree().create_timer(1.0).timeout
-	_next_combo_step()
+func _process(_delta):
+	# Sandevistan Input
+	if Input.is_action_just_pressed("ui_accept") and not is_sandevistan and current_turn == "Player" and energy >= 100:
+		_activate_sandevistan()
+		
+	# Sandevistan Visuals
+	if is_sandevistan and sandevistan_duration_timer and sandevistan_duration_timer.time_left > 0:
+		var percent = sandevistan_duration_timer.time_left / SANDEVISTAN_DURATION
+		swipe_input.update_sandevistan_timer(
+			swipe_input.target_circle.position,
+			percent
+		)
+	elif is_sandevistan and sandevistan_duration_timer and sandevistan_duration_timer.time_left <= 0:
+		pass # Handled by timeout signal
+
+	# Swipe Timeout Logic
+	if swipe_input.input_enabled and not is_sandevistan:
+		# Update timer visual
+		if current_step_timer and current_step_timer.time_left > 0:
+			var percent = current_step_timer.time_left / current_step_duration
+			swipe_input.update_timer(
+				swipe_input.get_meta("required_start", Vector2()),
+				swipe_input.get_meta("required_end", Vector2()),
+				percent
+			)
+		else:
+			swipe_input.hide_timer()
+
+# --- Turn Logic ---
+
 
 func _next_combo_step():
-	if combo_count >= MAX_COMBO:
+	# Normal mode: Limit combo
+	# Sandevistan: Unlimited attacks until time runs out
+	if not is_sandevistan and combo_count >= MAX_COMBO:
 		_end_player_turn()
 		return
 		
-	swipe_active = true
-	is_dragging = false
-	drag_trail.clear_points()
-	guide_line.visible = true
-	guide_arrow.visible = true
+	# Setup Swipe
+	swipe_input.set_active(true)
 	
-	# Difficulty logic
 	var duration_base = 1.2 if not is_sandevistan else 0.5
 	var reduction = combo_count * (0.02 if is_sandevistan else 0.1)
-	swipe_duration = max(0.2, duration_base - reduction)
-	swipe_time_left = swipe_duration
+	var duration = max(0.2, duration_base - reduction)
 	
-	# Generate Direction
-	var offset = Vector2.ZERO
+	# Timeout Timer
+	# First move = wait for swipe (handled in _on_swipe_started)
+	# Subsequent moves = immediate pressure
+	if not is_sandevistan and combo_count > 0:
+		current_step_duration = duration
+		current_step_timer = get_tree().create_timer(duration)
+		current_step_timer.timeout.connect(_on_swipe_timeout.bind(combo_count), CONNECT_ONE_SHOT)
 	
 	if is_sandevistan:
-		# FRUIT NINJA MODE: Show Target Circle
-		target_circle.visible = true
-		target_circle.position = enemy_node.position + Vector2(0, -40)
-		
-		# No guide lines for free movement
-		guide_line.visible = false
-		guide_arrow.visible = false
-		
-		# Dummy positions for safety
-		swipe_start_pos = target_circle.position
-		swipe_end_pos = target_circle.position
-		return # Skip normal setup
-
+		# Fruit Ninja Mode
+		swipe_input.show_target_circle(enemy.position + Vector2(0, -40))
+		# Hide guide lines handled by show_target_circle implicitly (since guide is separate)
 	else:
-		target_circle.visible = false
+		# Normal Mode directions
 		randomize()
-		required_angle = randf() * TAU
-		
-		# Visuals on Enemy
-		var center = enemy_node.position + Vector2(0, -40)
+		var required_angle = randf() * TAU
+		var center = enemy.position + Vector2(0, -40)
 		var radius = 100.0
-		offset = Vector2(cos(required_angle), sin(required_angle)) * radius
+		var offset = Vector2(cos(required_angle), sin(required_angle)) * radius
+		var start = center - offset
+		var end = center + offset
 		
-		swipe_start_pos = center - offset
-		swipe_end_pos = center + offset
-	
-	guide_line.clear_points()
-	guide_line.add_point(swipe_start_pos)
-	guide_line.add_point(swipe_end_pos)
-	
-	# Arrow tip
-	guide_arrow.clear_points()
-	guide_arrow.add_point(swipe_end_pos - (offset.normalized() * 20) + (offset.orthogonal().normalized() * 10))
-	guide_arrow.add_point(swipe_end_pos)
-	guide_arrow.add_point(swipe_end_pos - (offset.normalized() * 20) - (offset.orthogonal().normalized() * 10))
+		swipe_input.show_guide(start, end)
+		swipe_input.set_meta("required_start", start)
+		swipe_input.set_meta("required_end", end)
 
-func _process_swipe(start, end):
-	var vector = end - start
-	if vector.length() < 50:
-		return # Too short
-	
+func _on_swipe_updated(pos):
 	if is_sandevistan:
-		return # Handled in _process continuously
+		var center = swipe_input.target_circle.position
+		# Check distance
+		if pos.distance_to(center) < 40:
+			# Hit!
+			# Hit!
+			_handle_sandevistan_hit()
 
+func _on_swipe_started(_pos):
+	if is_sandevistan: return
+	
+	# Only start timer here for the FIRST move (infinite patience).
+	# Subsequent moves have timer started in _next_combo_step to maintain rhythm.
+	if combo_count == 0:
+		var duration_base = 1.2
+		var reduction = combo_count * 0.1
+		var duration = max(0.2, duration_base - reduction)
+		
+		current_step_duration = duration
+		current_step_timer = get_tree().create_timer(duration)
+		current_step_timer.timeout.connect(_on_swipe_timeout.bind(combo_count), CONNECT_ONE_SHOT)
 
-	var angle = vector.angle()
-	# Compare angle with required_angle
-	# Dot product of normalized vectors
+func _on_swipe_ended(start, end):
+	if is_sandevistan: return # Continuous input handled in updated
+	
+	var req_start = swipe_input.get_meta("required_start", Vector2())
+	var req_end = swipe_input.get_meta("required_end", Vector2())
+	
+	if req_start == Vector2(): return
+	
+	var vector = end - start
 	var swipe_dir = vector.normalized()
-	var req_dir = (swipe_end_pos - swipe_start_pos).normalized()
+	var req_dir = (req_end - req_start).normalized()
 	var accuracy = swipe_dir.dot(req_dir)
 	
 	if accuracy > 0.8:
-		# Success
 		_succeed_swipe(accuracy)
-	elif accuracy < -0.8:
-		# Wrong direction
-		_fail_swipe("WRONG WAY")
 	else:
 		_fail_swipe("BAD ANGLE")
 
 func _succeed_swipe(accuracy):
-	swipe_active = false
-	guide_line.visible = false
-	guide_arrow.visible = false
+	swipe_input.set_active(false)
+	swipe_input.hide_timer()
 	
-	# Calculations
 	var damage = BASE_DAMAGE * (1.0 + (combo_count * 0.2))
 	var note = "GOOD"
-	var shake = 2.0
+	var shake_amt = 2.0
 	
-	if accuracy > 0.95 and swipe_time_left > swipe_duration * 0.3:
+	if accuracy > 0.95:
 		note = "PERFECT!"
 		damage *= 1.5
-		shake = 5.0
+		shake_amt = 5.0
 		energy = min(100, energy + 15)
 	else:
 		energy = min(100, energy + 5)
-	
-	if is_sandevistan:
-		note = "SLICED"
-		damage *= 0.5 # Balance for rapid fire
-	
-	# Apply
+		
 	enemy_hp = max(0, enemy_hp - damage)
 	combo_count += 1
 	
-	# Juice
-	_slash_effect(swipe_start_pos, swipe_end_pos)
-	_pop_text(enemy_node.position, note + " " + str(int(damage)))
-	_shake_screen(shake)
-	_update_ui()
+	hud.update_health(player_hp, enemy_hp)
+	hud.update_energy(energy)
+	hud.pop_text(enemy.position, note + " " + str(int(damage)))
+	_shake_screen(shake_amt)
+	_slash_effect(swipe_input.get_meta("required_start"), swipe_input.get_meta("required_end"))
+	player.play_sword_swing()
+	player.play_attack_pose()
 	
 	if enemy_hp <= 0:
-		_check_game_over()
-		return
-	
-	# Chain
-	var delay = 0.2 if is_sandevistan else 0.5
-	await get_tree().create_timer(delay).timeout
-	_next_combo_step()
-
-func _fail_swipe(reason):
-	swipe_active = false
-	guide_line.visible = false
-	guide_arrow.visible = false
-	
-	_pop_text(enemy_node.position, reason, Color.RED)
-	combo_count = 0 # Reset combo
-	
-	if is_sandevistan:
-		# Just wait for next target or time out
+		_game_over(true)
+	else:
 		await get_tree().create_timer(0.2).timeout
 		_next_combo_step()
-	else:
-		_end_player_turn()
 
-func _end_player_turn():
-	if is_sandevistan:
-		_deactivate_sandevistan()
-	
-	current_turn = "Enemy"
-	_status("ENEMY TURN")
-	await get_tree().create_timer(1.0).timeout
-	_enemy_attack()
+func _fail_swipe(reason):
+	swipe_input.set_active(false)
+	swipe_input.hide_all_timers()
+	hud.pop_text(enemy.position, reason, Color.RED)
+	combo_count = 0
+	_end_player_turn()
 
-func _enemy_attack():
-	_animate_lunge(enemy_node, player_node)
-	await get_tree().create_timer(0.3).timeout
-	
-	var dmg = 15
-	if randf() > 0.8:
-		dmg *= 2
-		_shake_screen(8.0)
-		_pop_text(player_node.position, "CRITICAL HIT!", Color.RED)
-	else:
-		_pop_text(player_node.position, "HIT", Color.ORANGE)
-	
-	player_hp = max(0, player_hp - dmg)
-	_update_ui()
-	
-	if player_hp <= 0:
-		_check_game_over()
-	else:
-		await get_tree().create_timer(1.0).timeout
-		_start_player_turn()
+func _on_swipe_timeout(step_index):
+	# Verify we are still on the same step and haven't succeeded yet
+	if current_turn == "Player" and swipe_input.input_enabled and not is_sandevistan:
+		# Check if we moved on (hacky check: if combo count changed)
+		if step_index == combo_count:
+			_fail_swipe("TOO SLOW")
 
-# --- Sandevistan ---
+# --- Sandevistan Specifics ---
 func _activate_sandevistan():
 	is_sandevistan = true
 	energy = 0
+	combo_count = 0 # Reset combo to give full 5 attacks
 	Engine.time_scale = 0.3
-	_status("SANDEVISTAN ACTIVATED")
+	hud.update_energy(0)
+	hud.show_status("SANDEVISTAN ACTIVATED")
 	
-	# Visual
-	var chromatic = WorldEnvironment.new() # Placeholder for effect
+	# Use ignore_time_scale=true so it lasts 3 real seconds (not 10s of game time)
+	sandevistan_duration_timer = get_tree().create_timer(SANDEVISTAN_DURATION, true, false, true)
+	sandevistan_duration_timer.timeout.connect(_deactivate_sandevistan)
 	
-	# Timer
-	# 5 Seconds Real Time regardless of slow-mo
-	var t = get_tree().create_timer(SANDEVISTAN_DURATION)
-	t.timeout.connect(_deactivate_sandevistan)
-	
-	_next_combo_step()
+	# If we were waiting for turn, interrupt?
+	# Usually activated during idle or turn.
+	if current_turn == "Player":
+		_next_combo_step() # Force next step immediately if stalled
 
 func _deactivate_sandevistan():
 	if not is_sandevistan: return
 	is_sandevistan = false
+	swipe_input.hide_all_timers()
 	Engine.time_scale = 1.0
-	_status("TIME RESUMED")
+	hud.show_status("TIME RESUMED")
 	if current_turn == "Player":
 		_end_player_turn()
 
-# --- VisualFX ---
-
-func _slash_effect(start, end):
-	slash_line.clear_points()
-	slash_line.add_point(start)
-	slash_line.add_point(end)
-	slash_line.modulate.a = 1.0
+func _handle_sandevistan_hit():
+	# Use a cooldown to prevent update spam
+	if enemy.get_meta("hit_cooldown", 0) > Time.get_ticks_msec():
+		return
+	enemy.set_meta("hit_cooldown", Time.get_ticks_msec() + 100)
 	
-	var tween = create_tween()
-	tween.tween_property(slash_line, "modulate:a", 0.0, 0.3)
-
-func _pop_text(pos, text, color = Color.WHITE):
-	var l = Label.new()
-	l.text = text
-	l.position = pos + Vector2(randf_range(-20, 20), -50)
-	l.modulate = color
-	ui_layer.add_child(l)
+	swipe_input.animate_target_hit()
+	player.play_sword_swing()
 	
-	var tween = create_tween()
-	tween.tween_property(l, "position:y", l.position.y - 50, 0.5)
-	tween.tween_property(l, "modulate:a", 0.0, 0.5)
-	tween.tween_callback(l.queue_free)
+	var damage = BASE_DAMAGE * 0.5
+	enemy_hp = max(0, enemy_hp - damage)
+	combo_count += 1
+	energy = min(100, energy + 2)
+	
+	hud.update_health(player_hp, enemy_hp)
+	hud.update_energy(energy)
+	hud.pop_text(enemy.position, "SLICE " + str(int(damage)), Color.YELLOW)
+	
+	_spawn_blood(swipe_input.target_circle.position)
+	_spawn_blood(enemy.position)
+	
+	# Generate a random slash angle through the center
+	randomize()
+	var angle = randf() * TAU
+	var length = 150.0
+	var center = swipe_input.target_circle.position
+	var start = center - Vector2(cos(angle), sin(angle)) * length
+	var end = center + Vector2(cos(angle), sin(angle)) * length
+
+	
+	_slash_effect(start, end)
+	player.play_sword_swing(true) # Fast swing for Sandevistan
+	player.play_attack_pose(true) # Fast body animation
+	
+	if enemy_hp <= 0:
+		_game_over(true)
+	else:
+		# Move target
+		_next_combo_step()
+
+func _end_player_turn():
+	if current_turn == "Enemy": return
+	current_turn = "Enemy"
+	
+	swipe_input.set_active(false)
+	swipe_input.hide_all_timers()
+	if is_sandevistan: _deactivate_sandevistan()
+	
+	hud.show_status("ENEMY TURN")
+	
+	# Player returns, Enemy runs up
+	await player.return_to_origin()
+	await enemy.run_to(player.position + Vector2(150, 0))
+	
+	await get_tree().create_timer(0.5).timeout
+	_enemy_attack()
+
+func _enemy_attack():
+	# Enemy swing
+	enemy.play_sword_swing()
+	enemy.play_attack_pose()
+	
+	# Simple damage logic for now
+	# In real game, enemy might have combo or patterns
+	player_hp = max(0, player_hp - 5)
+	hud.update_health(player_hp, enemy_hp)
+	hud.pop_text(player.position, "Hit -5", Color.RED)
+	_spawn_blood(player.position)
+	
+	await get_tree().create_timer(1.0).timeout
+	
+	# Enemy returns, Player runs up
+	await enemy.return_to_origin()
+	
+	if player_hp <= 0:
+		_game_over(false)
+	else:
+		_start_player_turn()
+
+func _start_player_turn():
+	current_turn = "Player"
+	combo_count = 0
+	hud.show_status("PLAYER TURN")
+	await player.run_to(enemy.position - Vector2(150, 0))
+	_next_combo_step()
+
+func _game_over(win):
+	if win:
+		# Victory sequence
+		hud.show_status("VICTORY!")
+		await enemy.play_death()
+		await get_tree().create_timer(0.5).timeout
+		
+		var victory_screen = get_meta("victory_screen")
+		victory_screen.show_victory()
+	else:
+		# Defeat
+		hud.show_status("DEFEAT")
+		await get_tree().create_timer(2).timeout
+		get_tree().reload_current_scene()
+
+func _on_victory_continue():
+	get_tree().reload_current_scene()
+
+# --- Visual Effects ---
 
 func _shake_screen(amount):
 	var tween = create_tween()
@@ -552,66 +413,37 @@ func _shake_screen(amount):
 		tween.tween_property(self, "position", Vector2(randf(), randf()) * amount, 0.05)
 	tween.tween_property(self, "position", Vector2.ZERO, 0.05)
 
-func _animate_lunge(attacker, target):
-	var start = attacker.position
-	var end = target.position + Vector2(50 if attacker.scale.x > 0 else -50, 0)
-	var tween = create_tween()
-	tween.tween_property(attacker, "position", end, 0.1).set_trans(Tween.TRANS_EXPO)
-	tween.tween_property(attacker, "position", start, 0.4).set_trans(Tween.TRANS_ELASTIC)
-
-func _status(t):
-	status_label.text = t
-	status_label.modulate.a = 1.0
-	var tween = create_tween()
-	tween.tween_property(status_label, "modulate:a", 0.0, 2.0)
-
-func _update_ui():
-	hp_label_player.text = "HP: " + str(player_hp)
-	hp_label_enemy.text = "HP: " + str(enemy_hp)
+func _slash_effect(start, end):
+	# Create a new Sprite2D for this specific slash
+	var sprite = Sprite2D.new()
+	sprite.texture = load("res://assets/slash_clean.png")
+	sprite.z_index = 100 # Draw on top
+	add_child(sprite)
 	
-func _check_game_over():
-	if player_hp <= 0:
-		_status("DEFEAT")
-		await get_tree().create_timer(2).timeout
-		get_tree().reload_current_scene()
-	elif enemy_hp <= 0:
-		_status("VICTORY")
-		await get_tree().create_timer(2).timeout
-		get_tree().reload_current_scene()
-
-func _check_sandevistan_hit(start, end):
-	# Don't hit if too short movement to avoid jitter spam
-	if start.distance_to(end) < 5:
-		return
-
-	var center = target_circle.position
-	var closest = Geometry2D.get_closest_point_to_segment(center, start, end)
-	var dist = center.distance_to(closest)
+	# Transform
+	var center = (start + end) / 2.0
+	var dir = end - start
+	var length = dir.length()
 	
-	if dist < 40: # Hit!
-		_visual_hit_feedback()
-		
-		# Apply damage
-		var damage = BASE_DAMAGE * 0.5
-		enemy_hp = max(0, enemy_hp - damage)
-		combo_count += 1
-		energy = min(100, energy + 2)
-		
-		# Juice: BLOOD & SHAKE
-		_spawn_blood(closest) # Spawn at contact point
-		_shake_screen(5.0) # Stronger shake for Sandevistan (normally 2.0)
-		
-		_pop_text(enemy_node.position, "SLICE! " + str(int(damage)), Color.YELLOW)
-		
-		_update_ui()
-		
-		if enemy_hp <= 0:
-			_check_game_over()
-
-func _visual_hit_feedback():
-	var tw = create_tween()
-	tw.tween_property(target_circle, "scale", Vector2(1.2, 1.2), 0.05)
-	tw.tween_property(target_circle, "scale", Vector2(1.0, 1.0), 0.05)
+	sprite.position = center
+	sprite.rotation = dir.angle()
+	
+	# Scale setup: Assume texture is roughly 256px or similar, adjust scale to match swipe length
+	# Adjust base_scale based on your texture's actual size. 
+	# If texture is ~500px, 1.0 = 500px slash.
+	var base_scale_x = length / 500.0
+	sprite.scale = Vector2(base_scale_x * 0.5, base_scale_x * 0.8) # Start small
+	sprite.modulate.a = 1.0
+	
+	var tween = create_tween()
+	tween.set_parallel(true)
+	
+	# Flash open and fade
+	tween.tween_property(sprite, "scale", Vector2(base_scale_x * 1.2, base_scale_x * 1.2), 0.1).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.tween_property(sprite, "modulate:a", 0.0, 0.25).set_delay(0.05)
+	
+	# Cleanup
+	tween.chain().tween_callback(sprite.queue_free)
 
 func _spawn_blood(pos):
 	var particles = CPUParticles2D.new()
@@ -624,15 +456,10 @@ func _spawn_blood(pos):
 	particles.gravity = Vector2(0, 500)
 	particles.initial_velocity_min = 100
 	particles.initial_velocity_max = 300
-	
-	# Pixel visuals
 	particles.scale_amount_min = 4
 	particles.scale_amount_max = 8
-	particles.color = Color(1.0, 0.0, 0.0) # Red
-	
+	particles.color = Color(1.0, 0.0, 0.0)
 	add_child(particles)
 	particles.emitting = true
-	
-	# Cleanup
 	await get_tree().create_timer(1.2).timeout
 	particles.queue_free()
