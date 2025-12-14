@@ -1,26 +1,63 @@
-extends Node2D
+extends CharacterBody2D
 
 class_name Character
 
 var body_color: Color
 var is_player: bool = false
-var sword_node: Node2D
-var sword_tween: Tween # Store sword animation tween
 var idle_tween: Tween # Store idle animation tween
 var run_tween: Tween # Store run animation tween
 var origin_pos: Vector2
 
-# Bone references
-var torso: Node2D
-var head: Node2D
-var upper_arm_r: Node2D
-var upper_arm_l: Node2D
-var forearm_r: Node2D
-var forearm_l: Node2D
-var thigh_r: Node2D
-var thigh_l: Node2D
-var shin_r: Node2D
-var shin_l: Node2D
+# Sprite support
+var sprite: Sprite2D
+var weapon_sprite: Sprite2D # Composite sprite for weapon
+
+@export var MAX_SPEED: float = 300.0
+@export var ACCELERATION: float = 1500.0
+@export var FRICTION: float = 1200.0
+
+var manual_control: bool = true
+var sprite_textures: Array = []
+var last_dir: Vector2 = Vector2.DOWN
+
+# Animation State
+var run_down_textures: Array = []
+var run_down_right_textures: Array = []
+var run_right_textures: Array = []
+var run_up_right_textures: Array = []
+var run_up_textures: Array = []
+var run_up_left_textures: Array = []
+var run_left_textures: Array = []
+var run_down_left_textures: Array = []
+var anim_timer: float = 0.0
+
+# Weapon Config Dictionary
+# Maps direction Index (0-7) to Transform params:
+# position, rotation (degrees), z_index (relative), flip_v (bool)
+
+var weapon_config: Dictionary = {
+	0: {"pos": Vector2(-12, -22), "rot": - 90.0, "z": 1, "flip_v": false}, # Left
+	1: {"pos": Vector2(-10, -20), "rot": - 135.0, "z": 1, "flip_v": false}, # Down Left
+	2: {"pos": Vector2(10, -20), "rot": 135.0, "z": 1, "flip_v": false}, # Down Right
+	3: {"pos": Vector2(12, -18), "rot": 180.0, "z": 1, "flip_v": false}, # Down
+	4: {"pos": Vector2(-10, -28), "rot": - 45.0, "z": - 1, "flip_v": true}, # Up Left (Behind)
+	5: {"pos": Vector2(10, -28), "rot": - 45.0, "z": - 1, "flip_v": true}, # Up Right (Behind) - FIXED ROTATION
+	6: {"pos": Vector2(0, -30), "rot": 0.0, "z": - 1, "flip_v": true}, # Up (Behind)
+	7: {"pos": Vector2(12, -22), "rot": 0.0, "z": 1, "flip_v": false} # Right - FIXED ROTATION
+}
+
+# Jump Mechanics
+
+const JUMP_VELOCITY = -350.0
+const GRAVITY = 800.0
+var z_axis: float = 0.0
+var z_velocity: float = 0.0
+
+var current_frame: int = 0
+
+# UI
+var hp_bg: ColorRect
+var hp_fill: ColorRect
 
 func set_origin(pos: Vector2):
 	origin_pos = pos
@@ -28,109 +65,107 @@ func set_origin(pos: Vector2):
 func setup(color: Color, is_player_char: bool):
 	body_color = color
 	is_player = is_player_char
-	_create_stick_figure()
-	if is_player:
-		_add_hat("TopHat", Color(1.0, 0.8, 0.2))
-	else:
-		_add_hat("Cap", Color(0.2, 1.0, 0.4))
 	
-	_add_sword()
+	_setup_hp_bar()
+	
+	# Try to load sprites
+	_setup_sprites()
+	
+	# Setup composite weapon
+	_setup_weapon()
+	
 	play_idle()
 
+func _ready():
+	_setup_inputs()
+
+func _setup_inputs():
+	if not InputMap.has_action("move_left"):
+		InputMap.add_action("move_left")
+		var ev = InputEventKey.new()
+		ev.keycode = KEY_A
+		InputMap.action_add_event("move_left", ev)
+		
+	if not InputMap.has_action("move_right"):
+		InputMap.add_action("move_right")
+		var ev = InputEventKey.new()
+		ev.keycode = KEY_D
+		InputMap.action_add_event("move_right", ev)
+		
+	if not InputMap.has_action("move_up"):
+		InputMap.add_action("move_up")
+		var ev = InputEventKey.new()
+		ev.keycode = KEY_W
+		InputMap.action_add_event("move_up", ev)
+		
+	if not InputMap.has_action("move_down"):
+		InputMap.add_action("move_down")
+		var ev = InputEventKey.new()
+		ev.keycode = KEY_S
+		InputMap.action_add_event("move_down", ev)
+
+
+func _setup_hp_bar():
+	# Disable overhead bar for player (uses HUD now)
+	if is_player: return
+	
+	hp_bg = ColorRect.new()
+	hp_bg.size = Vector2(100, 10)
+	hp_bg.position = Vector2(-50, -130) # Above head
+	hp_bg.color = Color(0.1, 0.1, 0.1, 0.8)
+	hp_bg.z_index = 10
+	add_child(hp_bg)
+	
+	hp_fill = ColorRect.new()
+	hp_fill.size = Vector2(100, 10)
+	hp_fill.position = Vector2(-50, -130)
+	hp_fill.color = Color(0.2, 1.0, 0.2) if is_player else Color(1.0, 0.2, 0.2)
+	hp_fill.z_index = 11
+	add_child(hp_fill)
+
+func update_hp(val, max_val):
+	if hp_fill:
+		var pct = float(val) / float(max_val)
+		var target_width = 100.0 * pct
+		
+		# Animate width
+		var t = create_tween()
+		t.tween_property(hp_fill, "size:x", target_width, 0.2).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		
+		# Color logic
+		var target_color = Color(0.2, 1.0, 0.2) if is_player else Color(1.0, 0.2, 0.2)
+		if pct < 0.3:
+			target_color = Color(1.0, 0.0, 0.0) # Critical red
+			# Flash
+			var flash = create_tween().set_loops(3)
+			flash.tween_property(hp_fill, "modulate", Color.WHITE, 0.1)
+			flash.tween_property(hp_fill, "modulate", target_color, 0.1)
+			
+		hp_fill.color = target_color
+
 func play_idle():
-	# Stop existing idle tween if valid
 	if idle_tween and idle_tween.is_valid():
 		idle_tween.kill()
-		
-	# Simple breathing animation using torso bone
-	if torso:
-		idle_tween = create_tween().set_loops()
-		idle_tween.tween_property(torso, "rotation", 0.05, 1.0).set_trans(Tween.TRANS_SINE)
-		idle_tween.tween_property(torso, "rotation", -0.05, 1.0).set_trans(Tween.TRANS_SINE)
 
 func run_to(target_pos: Vector2, duration: float = 1.0):
 	# STOP all competing animations
 	if idle_tween and idle_tween.is_valid(): idle_tween.kill()
 	if run_tween and run_tween.is_valid(): run_tween.kill()
 	
-	# MOVEMENT TWEEN
+	# Determine Run Direction for Sprite
+	var dir = (target_pos - position).normalized()
+	if dir != Vector2.ZERO:
+		_update_sprite_direction(dir, 0.1) # Force frame update
+	
+	# MOVEMENT TWEEN (XY Support for 2.5D)
 	var move_tween = create_tween()
-	move_tween.tween_property(self, "position:x", target_pos.x, duration).set_trans(Tween.TRANS_LINEAR)
+	move_tween.tween_property(self, "position", target_pos, duration).set_trans(Tween.TRANS_LINEAR)
 	
-	# Determine Run Direction relative to Facings
-	# If running towards facing direction: Forward (1). If retreating: Backward (-1).
-	var global_dir = sign(target_pos.x - position.x)
-	var local_dir = global_dir * sign(scale.x) if scale.x != 0 else global_dir
-	# If local_dir is 0 (no movement), default to 1
-	if local_dir == 0: local_dir = 1
-	
-	# RUN CYCLE (Grounded Jog)
-	if torso and thigh_r and thigh_l:
-		run_tween = create_tween().set_loops()
-		run_tween.set_parallel(true)
-		
-		# DYNAMIC BODY LEAN (Lean into movement)
-		# 0.25 rad (approx 15 deg) lean.
-		run_tween.tween_property(torso, "rotation", 0.25 * local_dir, 0.1)
-		
-		var cycle_time = 0.4 # Fast steps
-		var half_cycle = cycle_time / 2.0
-		
-		# Reduced Amplitudes for "Normal Run"
-		# Thighs: +/- 0.5 rad (approx 28 deg)
-		# Shins: 0.0 to 1.0 rad
-		# Arms: +/- 0.5 rad
-		
-		# STEP 1: Right Leg Back (Push), Left Leg Fwd (Contact)
-		# NOTE: Cycles assume Forward running. If local_dir is -1 (Backward), we might want to reverse logic?
-		# For now, let's keep standard cycle, legs will just look like 'moonwalking' if retreating.
-		# Ideally legs should cycle 'backwards' if moving backwards, but 'return_to_origin' slide looks cleaner.
-		# Let's assume standard forward cycle for 'run_to'.
-		
-		# Right Leg (Pushing Back)
-		run_tween.tween_property(thigh_r, "rotation", -0.5, half_cycle).set_trans(Tween.TRANS_SINE)
-		run_tween.tween_property(shin_r, "rotation", 1.0, half_cycle).set_trans(Tween.TRANS_SINE) # Curl
-		
-		# Left Leg (Reaching Forward)
-		run_tween.tween_property(thigh_l, "rotation", 0.6, half_cycle).set_trans(Tween.TRANS_SINE)
-		run_tween.tween_property(shin_l, "rotation", 0.0, half_cycle).set_trans(Tween.TRANS_SINE) # Straight
-		
-		# Arms
-		run_tween.tween_property(upper_arm_r, "rotation", 0.5, half_cycle)
-		run_tween.tween_property(upper_arm_l, "rotation", -0.5, half_cycle)
-		
-		# Bobbing (Subtle)
-		run_tween.tween_property(self, "position:y", origin_pos.y + 4, half_cycle * 0.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
-		run_tween.chain().tween_property(self, "position:y", origin_pos.y, half_cycle * 0.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
-		
-		# STEP 2: Switch
-		run_tween.chain().set_parallel(true)
-		
-		# Right Leg (Reaching Forward)
-		run_tween.tween_property(thigh_r, "rotation", 0.6, half_cycle).set_trans(Tween.TRANS_SINE)
-		run_tween.tween_property(shin_r, "rotation", 0.0, half_cycle).set_trans(Tween.TRANS_SINE) # Straight
-		
-		# Left Leg (Pushing Back)
-		run_tween.tween_property(thigh_l, "rotation", -0.5, half_cycle).set_trans(Tween.TRANS_SINE)
-		run_tween.tween_property(shin_l, "rotation", 1.0, half_cycle).set_trans(Tween.TRANS_SINE) # Curl
-		
-		# Arms
-		run_tween.tween_property(upper_arm_r, "rotation", -0.5, half_cycle)
-		run_tween.tween_property(upper_arm_l, "rotation", 0.5, half_cycle)
-		
-		# Bobbing
-		run_tween.tween_property(self, "position:y", origin_pos.y + 4, half_cycle * 0.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
-		run_tween.chain().tween_property(self, "position:y", origin_pos.y, half_cycle * 0.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
-		
 	await move_tween.finished
 	
-	if run_tween and run_tween.is_valid(): run_tween.kill()
-	_reset_pose()
-	position.y = origin_pos.y
 	play_idle()
 
 func return_to_origin(duration: float = 1.0):
-	# Just use run_to logic, it handles direction calculation now
 	await run_to(origin_pos, duration)
 
 func play_attack_pose(is_fast: bool = false):
@@ -141,90 +176,23 @@ func play_attack_pose(is_fast: bool = false):
 	var tween = create_tween()
 	var start_pos = position
 	
-	# GROUNDED, SNAPPY ATTACK
+	# Simple Sprite Lunge
+	var lunge_offset = Vector2(15 * dir, 0)
+	tween.tween_property(self, "position", start_pos + lunge_offset, 0.08 * speed).set_trans(Tween.TRANS_CUBIC)
+	tween.chain().tween_property(self, "position", start_pos, 0.3 * speed)
 	
-	# PHASE 1: WINDUP (Very Minimal)
-	tween.set_parallel(true)
-	# Slight lean back
-	tween.tween_property(torso, "rotation", -0.2 * dir, 0.15 * speed)
-	# Arm ready
-	tween.tween_property(upper_arm_r, "rotation", 1.0 * dir, 0.15 * speed)
-	if forearm_r: tween.tween_property(forearm_r, "rotation", 0.3 * dir, 0.15 * speed)
-	# Stability stance
-	if thigh_r: tween.tween_property(thigh_r, "rotation", 0.2 * dir, 0.15 * speed)
-	if thigh_l: tween.tween_property(thigh_l, "rotation", -0.2 * dir, 0.15 * speed)
-	
-	# PHASE 2: STRIKE (Fast Lunge)
-	tween.chain().set_parallel(true)
-	# Short step insteda of huge jump (15px)
-	tween.tween_property(self, "position:x", start_pos.x + (15 * dir), 0.08 * speed).set_trans(Tween.TRANS_CUBIC)
-	tween.tween_property(torso, "rotation", 0.4 * dir, 0.08 * speed)
-	
-	# Sword swing
-	tween.tween_property(upper_arm_r, "rotation", -1.8 * dir, 0.08 * speed).set_trans(Tween.TRANS_CUBIC)
-	if forearm_r: tween.tween_property(forearm_r, "rotation", -0.2 * dir, 0.08 * speed)
-	
-	# Legs lunge slightly
-	if thigh_r: tween.tween_property(thigh_r, "rotation", -0.3 * dir, 0.08 * speed)
-	if thigh_l: tween.tween_property(thigh_l, "rotation", 0.3 * dir, 0.08 * speed)
-	
-	# PHASE 3: RECOVERY
-	tween.chain().set_parallel(true)
-	tween.tween_property(self, "position", start_pos, 0.3 * speed)
-	tween.tween_property(torso, "rotation", 0.0, 0.3 * speed)
-	tween.tween_property(upper_arm_r, "rotation", 0.0, 0.3 * speed)
-	
-	tween.tween_callback(func():
-		_reset_pose()
-		play_idle()
-	)
-	
+	tween.tween_callback(play_idle)
 	await tween.finished
 
 func _reset_pose():
-	# Helper to reset to neutral T-pose/Idle
-	if torso: torso.rotation = 0
-	if head: head.rotation = 0; head.position.y = -30
-	if thigh_r: thigh_r.rotation = 0
-	if thigh_l: thigh_l.rotation = 0
-	if shin_r: shin_r.rotation = 0
-	if shin_l: shin_l.rotation = 0
-	if upper_arm_r: upper_arm_r.rotation = 0
-	if upper_arm_l: upper_arm_l.rotation = 0
-	if forearm_r: forearm_r.rotation = 0
-	if forearm_l: forearm_l.rotation = 0
+	pass
 
-func play_sword_swing(is_fast: bool = false):
-	# Kill previous tweens on sword_node to prevent conflict
-	if sword_tween and sword_tween.is_valid():
-		sword_tween.kill()
-		
-	var tween = create_tween()
-	sword_tween = tween
-	
-	var start_rot = 0.0
-	var dir = 1.0 if is_player else -1.0
-	
-	# Speed multiplier: Sandevistan needs to be ignored_time_scale equivalent or just very fast
-	# If time_scale is 0.3, we want animation to look normal (1.0). So we multiply duration by 0.3?
-	# Or if we want it "fast", we make it 0.05s.
-	var speed_mult = 0.2 if is_fast else 1.0
-	
-	# Dramtic Windup (Goes back ~135 degrees)
-	var windup_angle = start_rot - (PI * 0.75 * dir)
-	tween.tween_property(sword_node, "rotation", windup_angle, 0.1 * speed_mult).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	
-	# Massive Swing (Cuts through ~270 degrees)
-	var swing_angle = start_rot + (PI * 0.75 * dir)
-	tween.tween_property(sword_node, "rotation", swing_angle, 0.15 * speed_mult).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
-	
-	# Return
-	tween.tween_property(sword_node, "rotation", start_rot, 0.3 * speed_mult).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
-	# Return
-	tween.tween_property(sword_node, "rotation", start_rot, 0.2).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+func play_sword_swing(_is_fast: bool = false):
+	# Animate composite weapon if needed, or just let body animation carry it
+	# For now, we can perhaps rotate the weapon sprite independently?
+	pass
 
 func play_lunge(target_pos: Vector2):
-	# Deprecated/Legacy lunge (kept for compatibility or small hops)
 	var start = position
 	var end = target_pos + Vector2(50 if scale.x > 0 else -50, 0)
 	var tween = create_tween()
@@ -232,188 +200,227 @@ func play_lunge(target_pos: Vector2):
 	tween.tween_property(self, "position", start, 0.4).set_trans(Tween.TRANS_ELASTIC)
 
 func play_death():
-	# Fall over and fade out
 	var tween = create_tween()
 	tween.set_parallel(true)
-	
-	# Rotate to fall over
 	tween.tween_property(self, "rotation", PI / 2, 0.5).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
-	
-	# Sink down
 	tween.tween_property(self, "position:y", position.y + 50, 0.5).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
-	
-	# Fade out
 	tween.tween_property(self, "modulate:a", 0.0, 0.8).set_delay(0.2)
-	
 	await tween.finished
 
-func _create_stick_figure():
-	# Skeletal bone system - each joint can rotate independently
-	# Torso bone (root of upper body)
-	var torso_node = Node2D.new()
-	torso_node.position = Vector2(0, -30)
-	add_child(torso_node)
-	var torso_line = Line2D.new()
-	torso_line.width = 6
-	torso_line.default_color = body_color
-	torso_line.add_point(Vector2(0, 60)) # Hip - extended to connect with legs
-	torso_line.add_point(Vector2(0, -30)) # Shoulder
-	torso_node.add_child(torso_line)
-	self.torso = torso_node
+func _setup_sprites():
+	var file_names = [
+		"uploaded_image_0_1765714206009.png",
+		"uploaded_image_1_1765714206009.png",
+		"uploaded_image_2_1765714206009.png",
+		"uploaded_image_3_1765714206009.png",
+		"uploaded_image_4_1765714206009.png",
+		"uploaded_image_0_1765714411778.png",
+		"uploaded_image_1_1765714411778.png",
+		"uploaded_image_2_1765714411778.png"
+	]
 	
-	# Head bone (child of torso)
-	var head_node = Node2D.new()
-	head_node.position = Vector2(0, -30)
-	torso_node.add_child(head_node)
-	var head_circle = Line2D.new()
-	head_circle.width = 6
-	head_circle.default_color = body_color
-	_create_circle(head_circle, 15)
-	head_circle.position = Vector2(0, -20)
-	head_node.add_child(head_circle)
-	self.head = head_node
+	sprite_textures.clear()
+	var _loaded_count = 0
 	
-	# Right arm (upper arm bone)
-	var upper_arm_r_node = Node2D.new()
-	upper_arm_r_node.position = Vector2(0, -30) # Shoulder
-	torso_node.add_child(upper_arm_r_node)
-	var upper_arm_r_line = Line2D.new()
-	upper_arm_r_line.width = 6
-	upper_arm_r_line.default_color = body_color
-	upper_arm_r_line.add_point(Vector2(0, 0))
-	upper_arm_r_line.add_point(Vector2(20, 30))
-	upper_arm_r_node.add_child(upper_arm_r_line)
-	self.upper_arm_r = upper_arm_r_node
-	
-	# Right forearm (child of upper arm)
-	var forearm_r_node = Node2D.new()
-	forearm_r_node.position = Vector2(20, 30) # Elbow
-	upper_arm_r_node.add_child(forearm_r_node)
-	var forearm_r_line = Line2D.new()
-	forearm_r_line.width = 6
-	forearm_r_line.default_color = body_color
-	forearm_r_line.add_point(Vector2(0, 0))
-	forearm_r_line.add_point(Vector2(0, 30))
-	forearm_r_node.add_child(forearm_r_line)
-	self.forearm_r = forearm_r_node
-	
-	# Left arm (upper arm bone)
-	var upper_arm_l_node = Node2D.new()
-	upper_arm_l_node.position = Vector2(0, -30) # Shoulder
-	torso_node.add_child(upper_arm_l_node)
-	var upper_arm_l_line = Line2D.new()
-	upper_arm_l_line.width = 6
-	upper_arm_l_line.default_color = body_color
-	upper_arm_l_line.add_point(Vector2(0, 0))
-	upper_arm_l_line.add_point(Vector2(-20, 30))
-	upper_arm_l_node.add_child(upper_arm_l_line)
-	self.upper_arm_l = upper_arm_l_node
-	
-	# Left forearm
-	var forearm_l_node = Node2D.new()
-	forearm_l_node.position = Vector2(-20, 30)
-	upper_arm_l_node.add_child(forearm_l_node)
-	var forearm_l_line = Line2D.new()
-	forearm_l_line.width = 6
-	forearm_l_line.default_color = body_color
-	forearm_l_line.add_point(Vector2(0, 0))
-	forearm_l_line.add_point(Vector2(0, 30))
-	forearm_l_node.add_child(forearm_l_line)
-	self.forearm_l = forearm_l_node
-	
-	# Right leg (thigh)
-	var thigh_r_node = Node2D.new()
-	thigh_r_node.position = Vector2(0, 60) # Hip (Local to Torso)
-	torso_node.add_child(thigh_r_node) # Attached to Torso
-	var thigh_r_line = Line2D.new()
-	thigh_r_line.width = 6
-	thigh_r_line.default_color = body_color
-	thigh_r_line.add_point(Vector2(0, 0))
-	thigh_r_line.add_point(Vector2(10, 25))
-	thigh_r_node.add_child(thigh_r_line)
-	self.thigh_r = thigh_r_node
-	
-	# Right shin
-	var shin_r_node = Node2D.new()
-	shin_r_node.position = Vector2(10, 25)
-	thigh_r_node.add_child(shin_r_node)
-	var shin_r_line = Line2D.new()
-	shin_r_line.width = 6
-	shin_r_line.default_color = body_color
-	shin_r_line.add_point(Vector2(0, 0))
-	shin_r_line.add_point(Vector2(5, 25))
-	shin_r_node.add_child(shin_r_line)
-	self.shin_r = shin_r_node
-	
-	# Left leg (thigh)
-	var thigh_l_node = Node2D.new()
-	thigh_l_node.position = Vector2(0, 60) # Hip (Local to Torso)
-	torso_node.add_child(thigh_l_node) # Attached to Torso
-	var thigh_l_line = Line2D.new()
-	thigh_l_line.width = 6
-	thigh_l_line.default_color = body_color
-	thigh_l_line.add_point(Vector2(0, 0))
-	thigh_l_line.add_point(Vector2(-10, 25))
-	thigh_l_node.add_child(thigh_l_line)
-	self.thigh_l = thigh_l_node
-	
-	# Left shin
-	var shin_l_node = Node2D.new()
-	shin_l_node.position = Vector2(-10, 25)
-	thigh_l_node.add_child(shin_l_node)
-	var shin_l_line = Line2D.new()
-	shin_l_line.width = 6
-	shin_l_line.default_color = body_color
-	shin_l_line.add_point(Vector2(0, 0))
-	shin_l_line.add_point(Vector2(-5, 25))
-	shin_l_node.add_child(shin_l_line)
-	self.shin_l = shin_l_node
+	for f in file_names:
+		var tex = null
+		var path = "res://assets/sprites/" + f
+		var _abs_path = ProjectSettings.globalize_path(path)
+		
+		if ResourceLoader.exists(path):
+			tex = load(path)
+			
+		if not tex and FileAccess.file_exists(path):
+			var img = Image.new()
+			var err = img.load(path)
+			if err == OK:
+				tex = ImageTexture.create_from_image(img)
+			else:
+				print("Failed to load image invalid format: ", path)
+				
+		if tex:
+			sprite_textures.append(tex)
+			_loaded_count += 1
+		else:
+			sprite_textures.append(null)
 
-func _create_circle(line, radius):
-	for i in range(17):
-		var angle = i * TAU / 16.0
-		line.add_point(Vector2(cos(angle), sin(angle)) * radius)
+	# Load Run Animations
+	var load_anim = func(prefix):
+		var frames = []
+		for i in range(6):
+			var p = "res://assets/sprites/" + prefix + "/" + prefix + "_" + str(i) + ".png"
+			var t = null
+			if ResourceLoader.exists(p): t = load(p)
+			elif FileAccess.file_exists(p):
+				var i_load = Image.new()
+				if i_load.load(p) == OK: t = ImageTexture.create_from_image(i_load)
+			if t: frames.append(t)
+			else: print("Missing frame: " + p)
+		return frames
 
-func _add_hat(type, color):
-	# Head is now a member variable
-	var hat = Node2D.new()
-	hat.position = Vector2(0, -35)
-	head.add_child(hat)
-	
-	var line = Line2D.new()
-	line.default_color = color
-	line.width = 4
-	hat.add_child(line)
-	
-	if type == "TopHat":
-		line.add_point(Vector2(-20, 0))
-		line.add_point(Vector2(20, 0))
-		var sub = Line2D.new()
-		sub.default_color = color; sub.width = 4
-		sub.add_point(Vector2(12, 0)); sub.add_point(Vector2(12, -30))
-		sub.add_point(Vector2(-12, -30)); sub.add_point(Vector2(-12, 0))
-		hat.add_child(sub)
-	elif type == "Cap":
-		for i in range(9):
-			var a = PI + (i * PI / 8.0)
-			line.add_point(Vector2(cos(a), sin(a) * 0.8) * 16)
-		line.add_point(Vector2(16, 0))
-		line.add_point(Vector2(28, 5))
+	run_down_textures = load_anim.call("run_down")
+	run_down_right_textures = load_anim.call("run_down_right")
+	run_right_textures = load_anim.call("run_right")
+	run_up_right_textures = load_anim.call("run_up_right")
+	run_up_textures = load_anim.call("run_up")
+	run_up_left_textures = load_anim.call("run_up_left")
+	run_left_textures = load_anim.call("run_left")
+	run_down_left_textures = load_anim.call("run_down_left")
 
-func _add_sword():
-	# Attach sword to right forearm (member variable)
-	sword_node = Node2D.new()
-	sword_node.position = Vector2(0, 30) # Hand position (end of forearm)
-	forearm_r.add_child(sword_node)
+	# Create or update sprite
+	if not sprite:
+		sprite = Sprite2D.new()
+		sprite.position = Vector2(0, -30)
+		sprite.scale = Vector2(3, 3)
+		add_child(sprite)
 	
-	var blade = Line2D.new()
-	blade.points = [Vector2(0, 0), Vector2(10, -50)]
-	blade.default_color = Color(0.8, 1.0, 1.0)
-	blade.width = 3
-	sword_node.add_child(blade)
+	# Find first valid texture for default
+	for t in sprite_textures:
+		if t:
+			sprite.texture = t
+			break
+
+func _setup_weapon():
+	if not weapon_sprite:
+		weapon_sprite = Sprite2D.new()
+		weapon_sprite.name = "WeaponSprite"
+		# Default scale for pixel perfect match
+		weapon_sprite.scale = Vector2(0.14, 0.14)
+		add_child(weapon_sprite)
+		
+	# Load Weapon Texture
+	var path = "res://assets/sprites/pixelart_cybersword.png"
+	var tex = null
+	if ResourceLoader.exists(path):
+		tex = load(path)
+	elif FileAccess.file_exists(path):
+		var img = Image.new()
+		if img.load(path) == OK:
+			tex = ImageTexture.create_from_image(img)
+			
+	if tex:
+		weapon_sprite.texture = tex
+		# Pivot Logic: Center of rotation should be handle.
+		# Assuming sword is vertical in image, handle is at bottom.
+		# If texture size is e.g. 64x64, center is 32,32. Handle at 32, 60?
+		# Offset moves the texture relative to Node position (Pivot).
+		# To put pivot at handle (bottom), we shift texture UP (-y).
+		var size = tex.get_size()
+		weapon_sprite.offset = Vector2(0, -size.y / 2.0)
+		
+	# Set Neon Glow
+	equip_weapon(Color(1.5, 1.2, 2.0)) # Purple/Blue glow
+
+func equip_weapon(glow_color: Color):
+	if weapon_sprite:
+		# Modulate > 1.0 creates Glow in WorldEnvironment (if Glow enabled)
+		weapon_sprite.modulate = glow_color
+
+func _physics_process(delta):
+	if is_player and manual_control:
+		var input_dir = Input.get_vector("move_left", "move_right", "move_up", "move_down")
+		
+		# Movement Physics
+		if input_dir != Vector2.ZERO:
+			velocity = velocity.move_toward(input_dir * MAX_SPEED, ACCELERATION * delta)
+			last_dir = input_dir
+			_update_sprite_direction(input_dir, delta)
+		else:
+			velocity = velocity.move_toward(Vector2.ZERO, FRICTION * delta)
+			_update_sprite_direction(last_dir, 0.0)
+			
+		move_and_slide()
+			
+		# Jump Mechanic
+		if Input.is_action_just_pressed("ui_accept") and z_axis >= 0:
+			z_velocity = JUMP_VELOCITY
+			
+		# Apply Gravity and Z-Axis Movement
+		# Apex Hang: Reduce gravity when near the top of the jump for a smooth stop
+		var applied_gravity = GRAVITY
+		if abs(z_velocity) < 100:
+			applied_gravity *= 0.5
+			
+		z_velocity += applied_gravity * delta
+		z_axis += z_velocity * delta
+		
+		# Floor Collision
+		if z_axis >= 0:
+			z_axis = 0
+			z_velocity = 0
+			
+		# Apply Visual Offset to Sprite
+		if sprite:
+			sprite.position.y = -30 + z_axis
+			# Sync weapon visual y with jump
+			if weapon_sprite:
+				# Use local variable for base Y as determined by direction config
+				pass
+
+func _update_sprite_direction(dir: Vector2, delta: float = 0.0):
+	if not sprite or sprite_textures.size() == 0: return
 	
-	var hilt = Line2D.new()
-	hilt.points = [Vector2(-5, -5), Vector2(8, 2)]
-	hilt.default_color = Color.GRAY
-	hilt.width = 4
-	sword_node.add_child(hilt)
+	# 8-Way Logic
+	var angle = rad_to_deg(dir.angle())
+	if angle < 0: angle += 360
+	
+	var index = 0
+	
+	if angle >= 337.5 or angle < 22.5:
+		index = 7 # Right
+	elif angle >= 22.5 and angle < 67.5:
+		index = 2 # Down Right
+	elif angle >= 67.5 and angle < 112.5:
+		index = 3 # Down
+	elif angle >= 112.5 and angle < 157.5:
+		index = 1 # Down Left
+	elif angle >= 157.5 and angle < 202.5:
+		index = 0 # Left
+	elif angle >= 202.5 and angle < 247.5:
+		index = 4 # Up Left
+	elif angle >= 247.5 and angle < 292.5:
+		index = 6 # Up
+	elif angle >= 292.5 and angle < 337.5:
+		index = 5 # Up Right
+	
+	# Animation Update Helper (same as before)
+	var update_anim = func(textures: Array):
+		if delta > 0.0 and textures.size() > 0:
+			anim_timer += delta
+			if anim_timer >= 0.1: # 10 FPS
+				anim_timer = 0.0
+				current_frame = (current_frame + 1) % textures.size()
+			sprite.texture = textures[current_frame]
+			return true
+		return false
+
+	var is_moving = false
+	if index == 3 and update_anim.call(run_down_textures): is_moving = true
+	elif index == 2 and update_anim.call(run_down_right_textures): is_moving = true
+	elif index == 7 and update_anim.call(run_right_textures): is_moving = true
+	elif index == 5 and update_anim.call(run_up_right_textures): is_moving = true
+	elif index == 6 and update_anim.call(run_up_textures): is_moving = true
+	elif index == 4 and update_anim.call(run_up_left_textures): is_moving = true
+	elif index == 0 and update_anim.call(run_left_textures): is_moving = true
+	elif index == 1 and update_anim.call(run_down_left_textures): is_moving = true
+	
+	if not is_moving:
+		# Static fallback
+		if index < sprite_textures.size() and sprite_textures[index] != null:
+			sprite.texture = sprite_textures[index]
+		elif sprite_textures.size() > 0 and sprite_textures[0] != null:
+			sprite.texture = sprite_textures[0]
+
+	# Sync Weapon
+	if weapon_sprite and weapon_config.has(index):
+		var cfg = weapon_config[index]
+		weapon_sprite.position = cfg["pos"] + Vector2(0, z_axis) # Add Jump offset
+		weapon_sprite.rotation_degrees = cfg["rot"]
+		weapon_sprite.z_index = cfg["z"]
+		weapon_sprite.flip_v = cfg["flip_v"]
+
+func look_at_target(target_pos: Vector2):
+	var dir = (target_pos - position).normalized()
+	if dir != Vector2.ZERO:
+		last_dir = dir
+		_update_sprite_direction(dir, 0.0)

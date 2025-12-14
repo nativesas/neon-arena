@@ -8,6 +8,7 @@ const MAX_COMBO = 5
 const SANDEVISTAN_DURATION = 2.0
 
 const SwipeInputSrc = preload("res://scenes/combat/SwipeInput.gd")
+const DefenseGameSrc = preload("res://scenes/combat/DefenseGame.gd")
 
 # State
 var player_hp = PLAYER_HP_MAX
@@ -22,20 +23,75 @@ var player: Character
 var enemy: Character
 var hud: HUD
 var swipe_input: SwipeInputSrc
+var defense_game: Control
 var ui_layer: CanvasLayer
 var current_step_timer: SceneTreeTimer
 var current_step_duration: float = 0.0
 var sandevistan_duration_timer: SceneTreeTimer
 
 # Visuals managed by Main
-# Visuals managed by Main
 # slash_line replaced by local instances
 
 func _ready():
+	y_sort_enabled = true # Enable depth sorting
 	randomize()
 	_setup_environment()
 	_setup_visuals()
 	_start_battle()
+
+# ... (Environment setup omitted, remains same) ...
+
+# ... (Visuals setup omitted, remains same) ...
+
+# ... (Battle/HP logic omitted, remains same) ...
+
+# ... (Process logic omitted, remains same) ...
+
+# ... (Turn logic omitted, remains same) ...
+
+func _enemy_attack():
+	# Enemy prepares to attack
+	hud.show_status("DEFEND! CLICK 1-5!")
+	
+	# Start Defense Game
+	defense_game.start_game(2.5, player.position) # 2.5 seconds to click 5 numbers, centered on player
+
+func _on_defense_success():
+	# Blocked!
+	hud.pop_text(player.position, "BLOCKED!", Color.CYAN)
+	_finish_enemy_attack(0) # 0 damage
+	
+func _on_defense_fail():
+	# Failed!
+	hud.pop_text(player.position, "FAILED!", Color.RED)
+	_finish_enemy_attack(BASE_DAMAGE) # Full damage
+
+func _finish_enemy_attack(damage_amount):
+	# Enemy swing visuals
+	enemy.play_sword_swing()
+	enemy.play_attack_pose()
+	
+	if damage_amount > 0:
+		player_hp = max(0, player_hp - damage_amount)
+		hud.pop_text(player.position, "Hit -" + str(damage_amount), Color.RED)
+		_spawn_blood(player.position)
+		_shake_screen(3.0)
+	else:
+		# Block effect (Sparks)
+		_spawn_blood(player.position + Vector2(0, -50)) # Reusing blood for now, maybe change color next?
+	
+	_update_all_hp()
+	
+	await get_tree().create_timer(1.0).timeout
+	
+	# Enemy returns, Player runs up
+	await enemy.return_to_origin()
+	
+	if player_hp <= 0:
+		_game_over(false)
+	else:
+		_start_player_turn()
+
 
 func _setup_environment():
 	var world_env = WorldEnvironment.new()
@@ -52,39 +108,76 @@ func _setup_environment():
 	var bg = ColorRect.new()
 	bg.color = Color(0.05, 0.05, 0.1)
 	bg.size = get_viewport_rect().size
+	bg.z_index = -100 # Keep BG behind everything
 	add_child(bg)
 	
-	var floor_line = Line2D.new()
-	floor_line.default_color = Color(0.0, 1.0, 1.0, 0.5)
-	floor_line.width = 4
-	floor_line.add_point(Vector2(50, 500))
-	floor_line.add_point(Vector2(1100, 500))
-	add_child(floor_line)
+	# Arena Floor Grid (2.5D perspective hint)
+	var grid_holder = Node2D.new()
+	grid_holder.z_index = -50
+	add_child(grid_holder)
 	
-	# Slash Vfx
-	# Instantiated per-attack in _slash_effect
+	var grid_color = Color(0.0, 1.0, 1.0, 0.1)
+	var center = get_viewport_rect().size / 2.0
+	
+	# Draw perspective lines
+	for i in range(-5, 6):
+		var line = Line2D.new()
+		line.width = 2
+		line.default_color = grid_color
+		# Vertical-ish diverging lines
+		var x_offset = i * 150 # Wider grid
+		line.add_point(Vector2(center.x + (x_offset * 0.2), 200)) # Horizon (Vanishing point approx)
+		line.add_point(Vector2(center.x + (x_offset * 1.5), 1080)) # Bottom
+		grid_holder.add_child(line)
+		
+	# Draw horizontal lines
+	for i in range(12):
+		var line = Line2D.new()
+		line.width = 2
+		line.default_color = grid_color
+		var y = 300 + (pow(i, 1.2) * 45) # Exponential spacing for perspective
+		if y > 1080: break
+		
+		# Width increases with Y
+		var far_width = 1200.0
+		var close_width = 3000.0
+		var progress = (y - 300) / 780.0
+		var current_width = lerp(far_width, close_width, progress)
+		
+		line.add_point(Vector2(center.x - (current_width * 0.5), y))
+		line.add_point(Vector2(center.x + (current_width * 0.5), y))
+		grid_holder.add_child(line)
 
 func _setup_visuals():
+	var screen_size = get_viewport_rect().size
+	var center_x = screen_size.x / 2.0
+	
 	# Characters
 	player = Character.new()
 	player.setup(Color.CYAN, true)
-	# Skeleton is ~80 units tall (hip to feet), so position at 500-80=420
-	player.set_origin(Vector2(100, 420))
-	player.position = Vector2(100, 420)
+	# Player at Bottom Center
+	var p_pos = Vector2(center_x, screen_size.y - 150) # Slight offset left
+	player.set_origin(p_pos)
+	player.position = p_pos
 	add_child(player)
 	
 	enemy = Character.new()
-	enemy.position = Vector2(1000, 420)
 	enemy.setup(Color.RED, false)
-	enemy.set_origin(Vector2(1000, 420))
-	enemy.scale.x = -1
+	# Enemy at Top Center
+	var e_pos = Vector2(center_x, screen_size.y * 0.35) # Slight offset right
+	enemy.position = e_pos
+	enemy.set_origin(e_pos)
+	enemy.set_origin(e_pos)
+	# Initial facing handled by scale in perspective update, but set default here
+	# enemy.scale.x = -1 # Disabled for 8-way sprites
 	add_child(enemy)
+
 	
 	# UI Layer
 	ui_layer = CanvasLayer.new()
 	add_child(ui_layer)
 	
-	# HUD
+	# HUD (Keeping existing HUD for energy/status, but ignoring HP labels on it)
 	hud = load("res://scenes/ui/HUD.tscn").instantiate()
 	ui_layer.add_child(hud)
 	
@@ -94,11 +187,20 @@ func _setup_visuals():
 	victory_screen.continue_pressed.connect(_on_victory_continue)
 	set_meta("victory_screen", victory_screen)
 	
-	# Swipe Input (Adding to UI layer to keep it stable vs screen shake, 
-	# but could also be in world if we want trails to follow world. 
-	# Original code had it in UI layer.)
+	# Swipe Input
 	swipe_input = SwipeInputSrc.new()
 	ui_layer.add_child(swipe_input)
+	
+	# Defense Game
+	defense_game = DefenseGameSrc.new()
+	defense_game.visible = false
+	ui_layer.add_child(defense_game)
+	defense_game.succeeded.connect(_on_defense_success)
+	defense_game.failed.connect(_on_defense_fail)
+	
+	# Pause Menu
+	var pause_menu = load("res://scenes/ui/PauseMenu.gd").new()
+	add_child(pause_menu)
 	
 	# Signals
 	swipe_input.swipe_ended.connect(_on_swipe_ended)
@@ -110,14 +212,32 @@ func _start_battle():
 	enemy_hp = ENEMY_HP_MAX
 	energy = 50
 	
-	hud.update_health(player_hp, enemy_hp)
+	_update_all_hp()
 	hud.update_energy(energy)
+	
+	# Initial Player Facing: UP (Back to camera)
+	if player:
+		player.look_at_target(player.position + Vector2.UP * 100)
 	
 	_start_player_turn()
 
+func _update_all_hp():
+	# Update both HUD and Character labels
+	hud.update_health(player_hp, PLAYER_HP_MAX, enemy_hp, ENEMY_HP_MAX)
+	if player: player.update_hp(player_hp, PLAYER_HP_MAX)
+	if enemy: enemy.update_hp(enemy_hp, ENEMY_HP_MAX)
+
 func _process(_delta):
+	_process_perspective()
+	
+	# Enemy Tracking
+	if enemy and player and is_instance_valid(enemy) and is_instance_valid(player):
+		# Only track if not attacking (simple check)
+		# Or always track? Let's always track for now to satisfy request
+		enemy.look_at_target(player.position)
+	
 	# Sandevistan Input
-	if Input.is_action_just_pressed("ui_accept") and not is_sandevistan and current_turn == "Player" and energy >= 100:
+	if Input.is_key_pressed(KEY_Q) and not is_sandevistan and current_turn == "Player" and energy >= 100:
 		_activate_sandevistan()
 		
 	# Sandevistan Visuals
@@ -143,6 +263,30 @@ func _process(_delta):
 		else:
 			swipe_input.hide_timer()
 
+
+func _process_perspective():
+	# Fake perspective scaling based on Y position
+	var horizon_y = 200.0
+	var bottom_y = 1080.0
+	var min_scale = 0.5
+	var max_scale = 1.2 # Slightly larger in front
+	
+	var chars = [player, enemy]
+	for c in chars:
+		if not c or not is_instance_valid(c): continue
+		var t = clamp((c.position.y - horizon_y) / (bottom_y - horizon_y), 0.0, 1.0)
+		# Non-linear easing for better depth feel
+		t = pow(t, 0.5)
+		var s = lerp(min_scale, max_scale, t)
+		
+		# Preserve facing direction (X sign)
+		# We DO NOT want to flip scale for enemy anymore because we have 8-way sprites that handle direction.
+		# if c == enemy: s *= -1
+			
+		c.scale = Vector2(s, s)
+
+		# c.z_index = int(c.position.y) # Y-sort is enabled on Main, so Z-Index shouldn't be manual unless necessary
+
 # --- Turn Logic ---
 
 
@@ -161,8 +305,6 @@ func _next_combo_step():
 	var duration = max(0.2, duration_base - reduction)
 	
 	# Timeout Timer
-	# First move = wait for swipe (handled in _on_swipe_started)
-	# Subsequent moves = immediate pressure
 	if not is_sandevistan and combo_count > 0:
 		current_step_duration = duration
 		current_step_timer = get_tree().create_timer(duration)
@@ -171,7 +313,6 @@ func _next_combo_step():
 	if is_sandevistan:
 		# Fruit Ninja Mode
 		swipe_input.show_target_circle(enemy.position + Vector2(0, -40))
-		# Hide guide lines handled by show_target_circle implicitly (since guide is separate)
 	else:
 		# Normal Mode directions
 		randomize()
@@ -192,14 +333,11 @@ func _on_swipe_updated(pos):
 		# Check distance
 		if pos.distance_to(center) < 40:
 			# Hit!
-			# Hit!
 			_handle_sandevistan_hit()
 
 func _on_swipe_started(_pos):
 	if is_sandevistan: return
 	
-	# Only start timer here for the FIRST move (infinite patience).
-	# Subsequent moves have timer started in _next_combo_step to maintain rhythm.
 	if combo_count == 0:
 		var duration_base = 1.2
 		var reduction = combo_count * 0.1
@@ -246,7 +384,7 @@ func _succeed_swipe(accuracy):
 	enemy_hp = max(0, enemy_hp - damage)
 	combo_count += 1
 	
-	hud.update_health(player_hp, enemy_hp)
+	_update_all_hp()
 	hud.update_energy(energy)
 	hud.pop_text(enemy.position, note + " " + str(int(damage)))
 	_shake_screen(shake_amt)
@@ -287,8 +425,6 @@ func _activate_sandevistan():
 	sandevistan_duration_timer = get_tree().create_timer(SANDEVISTAN_DURATION, true, false, true)
 	sandevistan_duration_timer.timeout.connect(_deactivate_sandevistan)
 	
-	# If we were waiting for turn, interrupt?
-	# Usually activated during idle or turn.
 	if current_turn == "Player":
 		_next_combo_step() # Force next step immediately if stalled
 
@@ -315,7 +451,7 @@ func _handle_sandevistan_hit():
 	combo_count += 1
 	energy = min(100, energy + 2)
 	
-	hud.update_health(player_hp, enemy_hp)
+	_update_all_hp()
 	hud.update_energy(energy)
 	hud.pop_text(enemy.position, "SLICE " + str(int(damage)), Color.YELLOW)
 	
@@ -351,41 +487,29 @@ func _end_player_turn():
 	
 	hud.show_status("ENEMY TURN")
 	
-	# Player returns, Enemy runs up
+	# Player returns, Enemy runs up (Vertical Attack)
 	await player.return_to_origin()
-	await enemy.run_to(player.position + Vector2(150, 0))
+	# Stop slightly short of the player to avoid overlap (Perspective offset)
+	# Player is at Y=Bottom (~930). Enemy is running down.
+	# Enemy should stop at Y ~ 800-850? 
+	# Or rather, position.y should be less than player.y
+	await enemy.run_to(player.position - Vector2(0, 120))
 	
 	await get_tree().create_timer(0.5).timeout
 	_enemy_attack()
-
-func _enemy_attack():
-	# Enemy swing
-	enemy.play_sword_swing()
-	enemy.play_attack_pose()
-	
-	# Simple damage logic for now
-	# In real game, enemy might have combo or patterns
-	player_hp = max(0, player_hp - 5)
-	hud.update_health(player_hp, enemy_hp)
-	hud.pop_text(player.position, "Hit -5", Color.RED)
-	_spawn_blood(player.position)
-	
-	await get_tree().create_timer(1.0).timeout
-	
-	# Enemy returns, Player runs up
-	await enemy.return_to_origin()
-	
-	if player_hp <= 0:
-		_game_over(false)
-	else:
-		_start_player_turn()
 
 func _start_player_turn():
 	current_turn = "Player"
 	combo_count = 0
 	hud.show_status("PLAYER TURN")
-	await player.run_to(enemy.position - Vector2(150, 0))
+	# Run to slightly below enemy (Perspective: Higher Y is closer to screen, Lower Y is further)
+	# Wait. Enemy is at Top (Deep in screen). Player is Bottom (Close to screen).
+	# Player runs UP to Enemy.
+	# Player Y should be > Enemy Y
+	# Stop at enemy.position + Vector2(0, 120) (Below/Closer than enemy)
+	await player.run_to(enemy.position + Vector2(0, 120))
 	_next_combo_step()
+
 
 func _game_over(win):
 	if win:
@@ -414,36 +538,51 @@ func _shake_screen(amount):
 	tween.tween_property(self, "position", Vector2.ZERO, 0.05)
 
 func _slash_effect(start, end):
-	# Create a new Sprite2D for this specific slash
-	var sprite = Sprite2D.new()
-	sprite.texture = load("res://assets/slash_clean.png")
-	sprite.z_index = 100 # Draw on top
-	add_child(sprite)
+	var dir_vec = end - start
+	var length = dir_vec.length()
+	var angle = dir_vec.angle()
 	
-	# Transform
-	var center = (start + end) / 2.0
-	var dir = end - start
-	var length = dir.length()
+	# Minimum visual length
+	if length < 50: length = 50
 	
-	sprite.position = center
-	sprite.rotation = dir.angle()
+	# Root pivot for easy transform
+	var pivot = Node2D.new()
+	pivot.position = start
+	pivot.rotation = angle
+	pivot.z_index = 100
+	add_child(pivot)
 	
-	# Scale setup: Assume texture is roughly 256px or similar, adjust scale to match swipe length
-	# Adjust base_scale based on your texture's actual size. 
-	# If texture is ~500px, 1.0 = 500px slash.
-	var base_scale_x = length / 500.0
-	sprite.scale = Vector2(base_scale_x * 0.5, base_scale_x * 0.8) # Start small
-	sprite.modulate.a = 1.0
+	# Outer Glow (The "Color" of the slash)
+	var glow = Line2D.new()
+	glow.points = [Vector2.ZERO, Vector2(length * 1.2, 0)] # 1.2x to overshoot/pierce
+	glow.width = 40.0
+	glow.default_color = Color(0.1, 1.0, 1.0, 0.4) # Cyan Transparent
+	glow.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	glow.end_cap_mode = Line2D.LINE_CAP_BOX
+	pivot.add_child(glow)
+	
+	# Inner Core (Bright center)
+	var core = Line2D.new()
+	core.points = [Vector2.ZERO, Vector2(length * 1.1, 0)]
+	core.width = 10.0
+	core.default_color = Color(0.8, 1.0, 1.0, 1.0) # Almost White
+	core.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	core.end_cap_mode = Line2D.LINE_CAP_BOX
+	pivot.add_child(core)
+	
+	# Animation: Shoot out
+	pivot.scale = Vector2(0.0, 1.0)
 	
 	var tween = create_tween()
 	tween.set_parallel(true)
 	
-	# Flash open and fade
-	tween.tween_property(sprite, "scale", Vector2(base_scale_x * 1.2, base_scale_x * 1.2), 0.1).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tween.tween_property(sprite, "modulate:a", 0.0, 0.25).set_delay(0.05)
+	# Rapid extension (Shoot through)
+	tween.tween_property(pivot, "scale:x", 1.0, 0.15).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
 	
-	# Cleanup
-	tween.chain().tween_callback(sprite.queue_free)
+	# Fade out
+	tween.tween_property(pivot, "modulate:a", 0.0, 0.25).set_delay(0.1)
+	
+	tween.chain().tween_callback(pivot.queue_free)
 
 func _spawn_blood(pos):
 	var particles = CPUParticles2D.new()
